@@ -1,0 +1,11 @@
+*.pyc
+__pycache__/
+cache/
+climbs.json
+climb_groups.json
+climb_names.json
+climb_segments.json
+cols.json
+.cache/
+.DS_Store
+venv/

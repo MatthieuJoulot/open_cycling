@@ -1,0 +1,636 @@
+import { fetchClimbMatches, fetchAllClimbNames, fetchActivityRecords, saveClimbName } from '../utils/api.js';
+import { openSegmentEditor } from '../components/segmentEditor.js?v=2';
+import { fmtDate, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr } from '../utils/format.js';
+
+let currentSegment = [];
+let currentStartDistanceM = 0;
+let selectedBinSizeM = null;
+
+const BIN_SIZES = [200, 500, 1000];
+
+const METRICS = {
+  elapsed_time_s: { label: 'Time', axis: 'Time', format: fmtDuration, lowerIsBetter: true, value: m => m.elapsed_time_s },
+  avg_speed: { label: 'Avg speed', axis: 'Speed', format: fmtSpeed, lowerIsBetter: false, value: m => m.avg_speed },
+  vam: { label: 'VAM', axis: 'VAM (m/h)', format: v => `${Math.round(v)} m/h`, lowerIsBetter: false, value: m => m.vam },
+  avg_power: { label: 'Power', axis: 'Power (W)', format: v => `${Math.round(v)} W`, lowerIsBetter: false, value: m => m.avg_power },
+  avg_hr: { label: 'Avg HR', axis: 'Heart rate (bpm)', format: fmtHr, lowerIsBetter: true, value: m => m.avg_hr },
+  speed_hr: { label: 'Speed / HR', axis: 'Speed / HR (km/h/bpm)', format: v => `${v.toFixed(2)} km/h/bpm`, lowerIsBetter: false, value: m => m.avg_hr ? m.avg_speed / m.avg_hr : null },
+  inv_time_hr: { label: '1 / (Time · HR)', axis: '1 / (s·bpm)', format: v => v < 0.01 || v > 10000 ? v.toExponential(2) : v.toFixed(4), lowerIsBetter: false, value: m => (m.elapsed_time_s && m.avg_hr) ? 1 / (m.elapsed_time_s * m.avg_hr) : null },
+  vam_hr: { label: 'VAM / HR', axis: 'VAM / HR (m/h/bpm)', format: v => `${v.toFixed(1)} m/h/bpm`, lowerIsBetter: false, value: m => m.avg_hr ? m.vam / m.avg_hr : null },
+};
+
+export async function renderClimb(key) {
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div id="climb-view">
+      <a href="#feed" class="text-decoration-none small">← Back to feed</a>
+      <div class="d-flex align-items-center gap-2 mt-2 mb-3">
+        <h3 id="climb-title" class="mb-0">Climb</h3>
+        <button id="edit-climb-name-btn" class="btn btn-sm btn-link py-0" title="Edit name">✎</button>
+      </div>
+      <div id="climb-stats" class="row g-2 mb-3"></div>
+
+      <div class="card mb-3">
+        <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+          <span>Segment</span>
+          <button id="modify-segment-btn" class="btn btn-sm btn-outline-primary">Modify segment</button>
+        </div>
+        <div class="card-body p-2">
+          <div id="climb-map" style="height: 300px;"></div>
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-header fw-semibold">Elevation profile</div>
+        <div class="card-body p-2">
+          <div style="height: 240px; position: relative;">
+            <canvas id="climb-elevation-chart"></canvas>
+          </div>
+          <div class="mt-2 d-flex align-items-center gap-2">
+            <label for="zone-bin" class="small text-muted mb-0">Bin size</label>
+            <input type="range" id="zone-bin" min="0" max="2" step="1" value="0" class="form-range" style="width: 200px;">
+            <span id="zone-bin-value" class="small text-muted">200 m</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-header fw-semibold d-flex justify-content-between align-items-center flex-wrap gap-2">
+          <span>Performance history</span>
+          <div class="d-flex align-items-center gap-3">
+            <div class="form-check form-check-inline mb-0">
+              <input class="form-check-input" type="checkbox" id="perf-regression">
+              <label class="form-check-label small" for="perf-regression">Regression line + R²</label>
+            </div>
+            <select id="perf-metric" class="form-select form-select-sm w-auto">
+              <option value="elapsed_time_s">Time</option>
+              <option value="avg_speed">Avg speed</option>
+              <option value="vam">VAM</option>
+              <option value="avg_power">Power</option>
+              <option value="avg_hr">Avg HR</option>
+              <option value="speed_hr">Speed / HR</option>
+              <option value="inv_time_hr">1 / (Time · HR)</option>
+              <option value="vam_hr">VAM / HR</option>
+            </select>
+          </div>
+        </div>
+        <div class="card-body p-2">
+          <div style="height: 260px; position: relative;">
+            <canvas id="climb-perf-chart"></canvas>
+          </div>
+          <p id="perf-regression-info" class="small text-muted mb-0 mt-2"></p>
+        </div>
+      </div>
+
+      <h5 class="mb-2">All performances</h5>
+      <div class="table-responsive">
+        <table class="table table-sm table-striped">
+          <thead>
+            <tr><th>Date</th><th>Ride</th><th>Time</th><th>VAM</th><th>Avg HR</th><th>Avg speed</th></tr>
+          </thead>
+          <tbody id="climb-perf-body"></tbody>
+        </table>
+      </div>
+      <p id="no-perfs" class="text-muted d-none">No performances found.</p>
+    </div>
+  `;
+
+  const [matches, names] = await Promise.all([fetchClimbMatches(key), fetchAllClimbNames()]);
+  const members = matches.members || [];
+  const nameEntry = names[key];
+  const title = document.getElementById('climb-title');
+  title.textContent = nameEntry?.name || `Climb on ${members[0] ? fmtDate(members[0].start_time) : 'unknown ride'}`;
+
+  renderStats(members, matches.count);
+  await renderSegmentDetails(members);
+  setupModifySegmentButton(members);
+  setupClimbNameEdit(key, nameEntry);
+  renderPerfChart(members);
+  renderPerformances(members);
+
+  const metricSelect = document.getElementById('perf-metric');
+  if (metricSelect) {
+    metricSelect.addEventListener('change', () => renderPerfChart(members));
+  }
+  const regressionCheck = document.getElementById('perf-regression');
+  if (regressionCheck) {
+    regressionCheck.addEventListener('change', () => renderPerfChart(members));
+  }
+
+  const binSlider = document.getElementById('zone-bin');
+  const binValue = document.getElementById('zone-bin-value');
+  if (binSlider) {
+    binSlider.addEventListener('input', () => {
+      selectedBinSizeM = BIN_SIZES[parseInt(binSlider.value)];
+      if (binValue) binValue.textContent = `${selectedBinSizeM} m`;
+      if (currentSegment.length) renderSegmentElevation(currentSegment, currentStartDistanceM);
+    });
+  }
+}
+
+function renderSegmentDetails(members) {
+  const mapContainer = document.getElementById('climb-map');
+  if (!mapContainer || members.length === 0) return Promise.resolve();
+
+  const rep = members[members.length - 1];
+  return fetchActivityRecords(rep.activity_id, 'distance,altitude,position_lat,position_long', 3000)
+    .then(records => {
+      currentSegment = records.filter(r =>
+        r.distance >= rep.start_distance_m && r.distance <= rep.end_distance_m
+      );
+      currentStartDistanceM = rep.start_distance_m;
+      renderSegmentMap(mapContainer, currentSegment);
+      renderSegmentElevation(currentSegment, currentStartDistanceM);
+    })
+    .catch(err => {
+      console.error('Failed to load segment details', err);
+      mapContainer.innerHTML = '<p class="text-muted small mb-0">Could not load segment details.</p>';
+    });
+}
+
+function setupClimbNameEdit(key, nameEntry) {
+  const btn = document.getElementById('edit-climb-name-btn');
+  const title = document.getElementById('climb-title');
+  if (!btn || !title) return;
+  btn.addEventListener('click', () => {
+    const current = nameEntry?.name || title.textContent;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'form-control form-control-sm';
+    input.value = current === 'Climb' || current.startsWith('Climb on') ? '' : current;
+    input.style.maxWidth = '400px';
+    const save = async () => {
+      const newName = input.value.trim();
+      if (!newName) return;
+      const parts = key.split(':');
+      const activityId = parts[0];
+      const start = parseFloat(parts[1]);
+      const end = parseFloat(parts[2]);
+      try {
+        await saveClimbName(activityId, start, end, newName);
+        title.textContent = newName;
+        btn.classList.remove('d-none');
+        input.remove();
+      } catch (err) {
+        console.error('Failed to save climb name', err);
+        alert('Could not save name');
+      }
+    };
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { input.remove(); btn.classList.remove('d-none'); } });
+    input.addEventListener('blur', () => { input.remove(); btn.classList.remove('d-none'); });
+    title.replaceWith(input);
+    input.focus();
+    input.select();
+    btn.classList.add('d-none');
+    // save button next to input
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'btn btn-sm btn-primary';
+    saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('click', save);
+    input.parentElement.appendChild(saveBtn);
+  });
+}
+
+function setupModifySegmentButton(members) {
+  const btn = document.getElementById('modify-segment-btn');
+  if (!btn || members.length === 0) return;
+  const rep = members[members.length - 1];
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      const records = await fetchActivityRecords(rep.activity_id, 'distance,altitude,position_lat,position_long', 3000);
+      await openSegmentEditor({
+        activityId: rep.activity_id,
+        records,
+        startDistanceM: rep.start_distance_m,
+        endDistanceM: rep.end_distance_m,
+        onSave: () => window.location.reload(),
+      });
+    } catch (err) {
+      console.error('Failed to open segment editor', err);
+      alert('Could not open segment editor: ' + (err?.message || err));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+function renderSegmentMap(container, segment) {
+  const points = segment.filter(r => r.position_lat && r.position_long).map(r => [r.position_lat, r.position_long]);
+  if (points.length < 2) return;
+
+  const map = L.map(container);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+  L.polyline(points, { color: '#dc3545', weight: 5, opacity: 0.9 }).addTo(map);
+  L.circleMarker(points[0], { radius: 7, color: '#ffffff', fillColor: '#198754', fillOpacity: 1, weight: 2 }).addTo(map).bindPopup('Start');
+  L.circleMarker(points[points.length - 1], { radius: 7, color: '#ffffff', fillColor: '#dc3545', fillOpacity: 1, weight: 2 }).addTo(map).bindPopup('Finish');
+  map.fitBounds(points, { padding: [20, 20] });
+}
+
+function gradeColor(grade) {
+  if (grade < -1) return '#0d6efd';      // blue downhill
+  if (grade < 1) return '#2ecc71';       // bright green flat
+  if (grade < 3) return '#f7d794';       // pale yellow
+  if (grade < 6) return '#ffc107';       // gold
+  if (grade < 9) return '#fd7e14';       // orange
+  if (grade < 12) return '#dc3545';      // red
+  if (grade < 20) return '#6f42c1';      // purple
+  return '#000000';                      // black
+}
+
+function interpolateAltitude(segment, distanceM) {
+  for (let i = 0; i < segment.length - 1; i++) {
+    const a = segment[i], b = segment[i + 1];
+    if (a.altitude == null || b.altitude == null) continue;
+    if (distanceM >= a.distance && distanceM <= b.distance) {
+      if (b.distance === a.distance) return a.altitude;
+      const t = (distanceM - a.distance) / (b.distance - a.distance);
+      return a.altitude + t * (b.altitude - a.altitude);
+    }
+  }
+  const rec = segment.find(r => r.altitude != null && r.distance >= distanceM);
+  if (rec) return rec.altitude;
+  for (let i = segment.length - 1; i >= 0; i--) {
+    if (segment[i].altitude != null) return segment[i].altitude;
+  }
+  return null;
+}
+
+function renderSegmentElevation(segment, startDistanceM) {
+  const canvas = document.getElementById('climb-elevation-chart');
+  if (!canvas || segment.length < 2) return;
+
+  const totalM = Math.max(...segment.map(r => r.distance)) - startDistanceM;
+  if (selectedBinSizeM == null) {
+    if (totalM < 1000) selectedBinSizeM = 200;
+    else if (totalM < 2000) selectedBinSizeM = 500;
+    else selectedBinSizeM = 1000;
+  }
+  const binSizeM = selectedBinSizeM;
+  const binSlider = document.getElementById('zone-bin');
+  const binValue = document.getElementById('zone-bin-value');
+  if (binSlider) {
+    binSlider.value = BIN_SIZES.indexOf(binSizeM);
+  }
+  if (binValue) binValue.textContent = `${binSizeM} m`;
+
+  const buckets = [];
+  let k = 0;
+  while (k * binSizeM < totalM) {
+    const bucketStart = startDistanceM + k * binSizeM;
+    const bucketEnd = Math.min(startDistanceM + (k + 1) * binSizeM, startDistanceM + totalM);
+    let startIdx = -1;
+    let endIdx = -1;
+    for (let i = 0; i < segment.length; i++) {
+      const r = segment[i];
+      if (r.altitude == null) continue;
+      if (r.distance >= bucketStart && r.distance <= bucketEnd) {
+        if (startIdx === -1) startIdx = i;
+        endIdx = i;
+      }
+    }
+    if (startIdx !== -1) {
+      const startAlt = segment[startIdx].altitude;
+      const endAlt = segment[endIdx].altitude;
+      const length = bucketEnd - bucketStart;
+      const gain = endAlt - startAlt;
+      const grade = length > 0 ? (gain / length) * 100 : 0;
+      buckets.push({
+        km: k + 1,
+        startIdx,
+        endIdx,
+        startDistKm: (bucketStart - startDistanceM) / 1000,
+        endDistKm: (bucketEnd - startDistanceM) / 1000,
+        grade,
+        length,
+      });
+    }
+    k++;
+  }
+
+  let points = segment.filter(r => r.altitude != null).map(r => ({
+    x: (r.distance - startDistanceM) / 1000,
+    y: r.altitude,
+  }));
+
+  const boundaryDists = new Set();
+  for (const b of buckets) {
+    boundaryDists.add(b.startDistKm);
+    boundaryDists.add(b.endDistKm);
+  }
+  for (const distKm of boundaryDists) {
+    const alt = interpolateAltitude(segment, startDistanceM + distKm * 1000);
+    if (alt != null) points.push({ x: distKm, y: alt });
+  }
+  points.sort((a, b) => a.x - b.x);
+  const deduped = [];
+  for (const p of points) {
+    const last = deduped[deduped.length - 1];
+    if (last && Math.abs(p.x - last.x) < 1e-6) continue;
+    deduped.push(p);
+  }
+  points = deduped;
+
+  const totalKm = totalM / 1000;
+  const binSizeKm = binSizeM / 1000;
+
+  if (window.climbElevationChart) window.climbElevationChart.destroy();
+  const ctx = canvas.getContext('2d');
+  window.climbElevationChart = new window.Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [{
+        label: 'Elevation (m)',
+        data: points,
+        borderWidth: 3,
+        pointRadius: 0,
+        fill: false,
+        backgroundColor: 'transparent',
+        tension: 0,
+        segment: {
+          borderColor: ctx => {
+            const midX = (ctx.p0.parsed.x + ctx.p1.parsed.x) / 2;
+            const bucket = buckets.find(b => midX >= b.startDistKm && midX <= b.endDistKm);
+            return bucket ? gradeColor(bucket.grade) : '#0d6efd';
+          }
+        }
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      parsing: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: items => `km ${items[0].parsed.x.toFixed(2)}`,
+            label: item => `${item.raw.y.toFixed(0)} m`
+          }
+        },
+        segmentZones: { buckets, segment, startDistanceM }
+      },
+      scales: {
+        x: {
+          type: 'linear',
+          min: 0,
+          max: totalKm,
+          title: { display: true, text: 'Distance (km)' },
+          ticks: { stepSize: binSizeKm, autoSkip: false, maxRotation: 45, minRotation: 30 }
+        },
+        y: { title: { display: true, text: 'Elevation (m)' } }
+      }
+    },
+    plugins: [{
+      id: 'segmentZones',
+      beforeDatasetsDraw(chart, args, options) {
+        const { ctx, scales: { x, y }, chartArea } = chart;
+        const buckets = options.buckets || [];
+        const segment = options.segment || [];
+        const startDistanceM = options.startDistanceM || 0;
+        ctx.save();
+        for (const b of buckets) {
+          if (b.length <= 0 || b.startIdx < 0) continue;
+          const bucketStartM = startDistanceM + b.startDistKm * 1000;
+          const bucketEndM = startDistanceM + b.endDistKm * 1000;
+          const inside = segment.filter(r => r.altitude != null && r.distance >= bucketStartM && r.distance <= bucketEndM);
+          if (inside.length < 1) continue;
+
+          const pts = [];
+          const startY = interpolateAltitude(segment, bucketStartM);
+          if (startY != null) pts.push({ distKm: b.startDistKm, alt: startY });
+          for (const r of inside) {
+            pts.push({ distKm: (r.distance - startDistanceM) / 1000, alt: r.altitude });
+          }
+          const endY = interpolateAltitude(segment, bucketEndM);
+          if (endY != null) pts.push({ distKm: b.endDistKm, alt: endY });
+          if (pts.length < 2) continue;
+
+          const baseColor = gradeColor(b.grade);
+          const r = parseInt(baseColor.slice(1, 3), 16);
+          const g = parseInt(baseColor.slice(3, 5), 16);
+          const bl = parseInt(baseColor.slice(5, 7), 16);
+          ctx.fillStyle = `rgba(${r}, ${g}, ${bl}, 0.5)`;
+          ctx.beginPath();
+          const startX = x.getPixelForValue(b.startDistKm) - 0.5;
+          const endX = x.getPixelForValue(b.endDistKm) + 0.5;
+          ctx.moveTo(startX, chartArea.bottom);
+          ctx.lineTo(startX, y.getPixelForValue(pts[0].alt));
+          for (let i = 1; i < pts.length; i++) {
+            ctx.lineTo(x.getPixelForValue(pts[i].distKm), y.getPixelForValue(pts[i].alt));
+          }
+          ctx.lineTo(endX, chartArea.bottom);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.restore();
+      },
+      afterDatasetsDraw(chart, args, options) {
+        const { ctx, scales: { x, y }, chartArea } = chart;
+        const buckets = options.buckets || [];
+        const segment = options.segment || [];
+        const startDistanceM = options.startDistanceM || 0;
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#212529';
+        for (const b of buckets) {
+          if (b.startIdx === b.endIdx || b.startIdx < 0) continue;
+          const startX = x.getPixelForValue(b.startDistKm);
+          const endX = x.getPixelForValue(b.endDistKm);
+          const zoneWidth = endX - startX;
+          if (zoneWidth < 28) continue;
+          const fontSize = Math.max(8, Math.min(12, Math.floor(zoneWidth / 5)));
+          ctx.font = `bold ${fontSize}px system-ui, -apple-system, sans-serif`;
+          let sumAlt = 0;
+          let count = 0;
+          for (let i = b.startIdx; i <= b.endIdx; i++) {
+            const rec = segment[i];
+            if (rec && rec.altitude != null) { sumAlt += rec.altitude; count++; }
+          }
+          if (count === 0) continue;
+          const midX = (startX + endX) / 2;
+          const curveY = y.getPixelForValue(sumAlt / count);
+          const midY = (curveY + chartArea.bottom) / 2;
+          ctx.fillText(`${b.grade.toFixed(1)}%`, midX, midY);
+        }
+        ctx.restore();
+      }
+    }]
+  });
+}
+
+function renderStats(members, count) {
+  const container = document.getElementById('climb-stats');
+  if (members.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+  const latest = members[members.length - 1];
+  const bestTime = members.filter(m => m.elapsed_time_s).sort((a, b) => a.elapsed_time_s - b.elapsed_time_s)[0];
+  const bestVam = members.filter(m => m.vam).sort((a, b) => b.vam - a.vam)[0];
+
+  const stats = [
+    { label: 'Times done', value: count || members.length },
+    { label: 'Length', value: fmtDistance(latest.length_m / 1000) },
+    { label: 'Ascent', value: fmtElevation(latest.elevation_gain_m) },
+    { label: 'Avg grade', value: fmtGrade(latest.avg_grade_percent) },
+    { label: 'Best time', value: bestTime ? fmtDuration(bestTime.elapsed_time_s) : '-' },
+    { label: 'Best VAM', value: bestVam ? Math.round(bestVam.vam) + ' m/h' : '-' },
+  ];
+
+  container.innerHTML = stats.map(s => `
+    <div class="col-6 col-md-3">
+      <div class="card text-center p-2">
+        <div class="stat-value">${s.value}</div>
+        <div class="stat-label">${s.label}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderPerformances(members) {
+  const tbody = document.getElementById('climb-perf-body');
+  const noPerfs = document.getElementById('no-perfs');
+  tbody.innerHTML = '';
+
+  if (members.length === 0) {
+    noPerfs.classList.remove('d-none');
+    return;
+  }
+  noPerfs.classList.add('d-none');
+
+  for (const m of members) {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>${fmtDate(m.start_time)}</td>
+      <td><a href="#activity/${m.activity_id}" class="text-decoration-none">${escapeHtml(m.activity_name || 'Ride')}</a></td>
+      <td>${m.elapsed_time_s ? fmtDuration(m.elapsed_time_s) : '-'}</td>
+      <td>${m.vam ? Math.round(m.vam) + ' m/h' : '-'}</td>
+      <td>${fmtHr(m.avg_hr)}</td>
+      <td>${fmtSpeed(m.avg_speed)}</td>
+    `;
+    tbody.appendChild(row);
+  }
+}
+
+function renderPerfChart(members) {
+  const canvas = document.getElementById('climb-perf-chart');
+  if (!canvas || members.length === 0) return;
+
+  const metric = document.getElementById('perf-metric').value;
+  const meta = METRICS[metric];
+  const validMembers = members.filter(m => {
+    const v = meta.value(m);
+    return v != null && !isNaN(v) && isFinite(v);
+  });
+
+  const ranked = validMembers.slice().sort((a, b) => meta.lowerIsBetter ? meta.value(a) - meta.value(b) : meta.value(b) - meta.value(a));
+  const medalKeys = new Set(ranked.slice(0, 3).map(m => `${m.activity_id}:${Math.round(m.start_distance_m)}:${Math.round(m.end_distance_m)}`));
+
+  const labels = members.map(m => fmtDate(m.start_time));
+  const data = members.map(m => meta.value(m));
+  const colors = members.map(m => {
+    const key = `${m.activity_id}:${Math.round(m.start_distance_m)}:${Math.round(m.end_distance_m)}`;
+    if (!medalKeys.has(key)) return '#0d6efd';
+    const pos = ranked.findIndex(r => r.activity_id === m.activity_id && Math.round(r.start_distance_m) === Math.round(m.start_distance_m));
+    if (pos === 0) return '#ffd700';
+    if (pos === 1) return '#c0c0c0';
+    return '#cd7f32';
+  });
+
+  const showRegression = document.getElementById('perf-regression')?.checked;
+  const regression = showRegression ? computeRegression(data) : null;
+  const info = document.getElementById('perf-regression-info');
+  if (info) {
+    if (regression) {
+      const a = -regression.slope;
+      const aText = Math.abs(a) < 0.001 || Math.abs(a) > 10000 ? a.toExponential(3) : a.toFixed(4);
+      info.textContent = `R² = ${regression.r2.toFixed(3)} | y = -${aText}·x + ${regression.intercept.toFixed(4)}`;
+    } else {
+      info.textContent = '';
+    }
+  }
+
+  const datasets = [];
+  if (regression) {
+    datasets.push({
+      label: `Regression (R² ${regression.r2.toFixed(2)})`,
+      data: regression.predicted,
+      type: 'line',
+      borderColor: '#343a40',
+      borderWidth: 3,
+      pointRadius: 0,
+      fill: false,
+    });
+  }
+  datasets.push({
+    label: meta.label,
+    data,
+    pointBackgroundColor: colors,
+    pointBorderColor: colors,
+    pointRadius: 6,
+    showLine: false,
+  });
+
+  const xScale = { title: { display: true, text: 'Date' }, ticks: { maxRotation: 45, minRotation: 30 } };
+  if (validMembers.length === 1) {
+    const idx = members.indexOf(validMembers[0]);
+    xScale.min = idx - 0.5;
+    xScale.max = idx + 0.5;
+    xScale.offset = true;
+  }
+
+  if (window.climbPerfChart) window.climbPerfChart.destroy();
+  const ctx = canvas.getContext('2d');
+  window.climbPerfChart = new window.Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: items => items[0].label,
+            label: item => `${meta.label}: ${meta.format(item.raw)}`
+          }
+        }
+      },
+      scales: {
+        x: xScale,
+        y: { title: { display: true, text: meta.axis } }
+      }
+    }
+  });
+}
+
+function computeRegression(values) {
+  const pairs = values.map((y, x) => ({ x, y })).filter(p => p.y != null && !isNaN(p.y));
+  const n = pairs.length;
+  if (n < 2) return null;
+  const sumX = pairs.reduce((s, p) => s + p.x, 0);
+  const sumY = pairs.reduce((s, p) => s + p.y, 0);
+  const sumXY = pairs.reduce((s, p) => s + p.x * p.y, 0);
+  const sumX2 = pairs.reduce((s, p) => s + p.x * p.x, 0);
+  const denom = n * sumX2 - sumX * sumX;
+  if (denom === 0) return null;
+  const slope = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+  const predicted = values.map((_, x) => slope * x + intercept);
+  const meanY = sumY / n;
+  const ssRes = pairs.reduce((s, p) => s + Math.pow(p.y - predicted[p.x], 2), 0);
+  const ssTot = pairs.reduce((s, p) => s + Math.pow(p.y - meanY, 2), 0);
+  const r2 = ssTot === 0 ? 1 : 1 - ssRes / ssTot;
+  return { slope, intercept, r2, predicted };
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Climb Analyzer</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    body { background: #f8f9fa; }
+    #map { height: 420px; border: 1px solid #ddd; border-radius: .375rem; }
+    #elevation-chart, #hr-chart { height: 320px; }
+    .activity-item { cursor: pointer; }
+    .category-badge { font-size: .75rem; min-width: 4.5rem; }
+    .stat-value { font-size: 1.25rem; font-weight: 600; }
+    .stat-label { font-size: .7rem; text-transform: uppercase; color: #6c757d; }
+    .sidebar-sticky { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
+    .mini-map { background: #e9ecef; }
+    .activity-section .card-header { cursor: pointer; }
+    .activity-section .card-header .chevron::before { content: '▼'; }
+    .activity-section .card-header.collapsed .chevron::before { content: '▶'; }
+  </style>
+</head>
+<body>
+  <div id="nav"></div>
+
+  <div class="container-fluid py-3">
+    <div id="loading" class="d-none text-center py-5">
+      <div class="spinner-border text-primary" role="status">
+        <span class="visually-hidden">Loading…</span>
+      </div>
+      <p class="text-muted mt-2 small">Loading…</p>
+    </div>
+
+    <div class="row g-3">
+      <aside id="sidebar" class="col-lg-2 col-md-3 d-none d-md-block"></aside>
+      <main id="app" class="col-lg-10 col-md-9"></main>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
