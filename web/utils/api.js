@@ -94,3 +94,15 @@ export async function deleteSegment(id, startDistanceM, endDistanceM) {
   if (!res.ok) throw new Error('Failed to delete segment');
   return res.json();
 }
+
+export async function startSync() {
+  const res = await fetch(`${BASE}/api/sync`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to start sync');
+  return res.json();
+}
+
+export async function fetchSyncStatus() {
+  const res = await fetch(`${BASE}/api/sync/status`);
+  if (!res.ok) throw new Error('Failed to get sync status');
+  return res.json();
+}

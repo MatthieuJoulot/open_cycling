@@ -9,3 +9,5 @@ cols.json
 .cache/
 .DS_Store
 venv/
+config.json
+garmindb.log

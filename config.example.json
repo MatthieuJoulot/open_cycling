@@ -1,0 +1,8 @@
+{
+  "activities_db": "~/llm/bike/HealthData/DBs/garmin_activities.db",
+  "garmin_db": "~/llm/bike/HealthData/DBs/garmin.db",
+  "fit_dir": "~/llm/bike/HealthData/FitFiles/Activities",
+  "personal_info_json": "~/llm/bike/HealthData/FitFiles/personal-information.json",
+  "garmindb_cli": "~/llm/bike/garmindb-venv/bin/garmindb_cli.py",
+  "port": 8080
+}

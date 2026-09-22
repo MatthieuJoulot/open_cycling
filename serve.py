@@ -4,19 +4,24 @@ import datetime
 import json
 import math
 import sqlite3
+import subprocess
+import sys
+import threading
+import traceback
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import analyze_climbs
 import climb_groups
+import config
 import osm_lookup
 import regions
 import segment_store
 
 ROOT = Path(__file__).parent / "web"
 CLIMBS_JSON = Path(__file__).parent / "climbs.json"
-DB_PATH = Path.home() / "llm/bike/HealthData/DBs/garmin_activities.db"
+DB_PATH = config.ACTIVITIES_DB
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -28,6 +33,9 @@ class Handler(SimpleHTTPRequestHandler):
         path = parsed.path
         query = parse_qs(parsed.query)
 
+        if path == "/api/sync/status":
+            self._send_json(json.dumps(get_sync_status()))
+            return
         if path == "/api/climbs":
             self._send_json(json.dumps(get_climbs_with_overrides()))
             return
@@ -160,6 +168,11 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(json.dumps({"deleted": True}))
             return
 
+        if path == "/api/sync":
+            started = start_sync()
+            self._send_json(json.dumps(started))
+            return
+
         self.send_error(404, "Not found")
 
     def _send_json(self, body):
@@ -171,7 +184,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def _serve_fit_file(self, activity_id):
-        fit_path = Path.home() / "llm/bike/HealthData/FitFiles/Activities" / f"{activity_id}_ACTIVITY.fit"
+        fit_path = config.FIT_DIR / f"{activity_id}_ACTIVITY.fit"
         if not fit_path.exists():
             self.send_error(404, "FIT file not found")
             return
@@ -308,7 +321,7 @@ def _convert_time_fields(row):
     return row
 
 
-PERSONAL_INFO_JSON = Path.home() / "llm/bike/HealthData/FitFiles/personal-information.json"
+PERSONAL_INFO_JSON = config.PERSONAL_INFO_JSON
 
 
 def _load_climbs():
@@ -520,7 +533,7 @@ def get_activity_details(activity_id):
 
     devices = []
     try:
-        garmin_db = Path.home() / "llm/bike/HealthData/DBs/garmin.db"
+        garmin_db = config.GARMIN_DB
         gconn = sqlite3.connect(str(garmin_db))
         gconn.row_factory = sqlite3.Row
         gcur = gconn.cursor()
@@ -672,7 +685,7 @@ def get_profile():
 
     devices = []
     try:
-        garmin_db = Path.home() / "llm/bike/HealthData/DBs/garmin.db"
+        garmin_db = config.GARMIN_DB
         gconn = sqlite3.connect(str(garmin_db))
         gconn.row_factory = sqlite3.Row
         gcur = gconn.cursor()
@@ -723,7 +736,132 @@ def get_profile():
     }
 
 
+_sync_state = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "phase": None,
+    "last_log": [],
+    "result": None,
+    "error": None,
+}
+_sync_lock = threading.Lock()
+
+
+def _sync_log(phase, message):
+    with _sync_lock:
+        _sync_state["phase"] = phase
+        _sync_state["last_log"] = (_sync_state["last_log"] + [message])[-30:]
+
+
+def get_sync_status():
+    with _sync_lock:
+        return dict(_sync_state)
+
+
+def start_sync():
+    with _sync_lock:
+        if _sync_state["running"]:
+            return {"ok": True, "already_running": True, "status": dict(_sync_state)}
+        _sync_state.update({
+            "running": True,
+            "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "finished_at": None,
+            "phase": "starting",
+            "last_log": [],
+            "result": None,
+            "error": None,
+        })
+
+    thread = threading.Thread(target=_run_sync_worker, daemon=True)
+    thread.start()
+    return {"ok": True, "started": True}
+
+
+def _run_sync_worker():
+    try:
+        result = run_sync()
+        with _sync_lock:
+            _sync_state["running"] = False
+            _sync_state["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            _sync_state["result"] = result
+            _sync_state["phase"] = "done" if result.get("ok") else "failed"
+    except Exception as exc:
+        traceback.print_exc()
+        with _sync_lock:
+            _sync_state["running"] = False
+            _sync_state["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            _sync_state["error"] = str(exc)
+            _sync_state["phase"] = "failed"
+
+
+def run_sync():
+    """Download + import new activities via GarminDB, then refresh analysis.
+
+    Runs in a background thread started by start_sync(). GarminDB keeps its own
+    download state, but re-checks every activity against Garmin Connect, so a
+    full pass takes minutes even when nothing is new.
+    """
+    if not config.ACTIVITIES_DB or not config.ACTIVITIES_DB.exists():
+        return {"ok": False, "error": f"activities_db not found: {config.ACTIVITIES_DB}"}
+
+    if config.GARMINDB_CLI and Path(config.GARMINDB_CLI).exists():
+        cli = Path(config.GARMINDB_CLI)
+        # Use the interpreter next to the CLI when it lives inside a venv.
+        venv_python = cli.parent / "python"
+        interpreter = str(venv_python) if venv_python.exists() else sys.executable
+        cmd = [interpreter, str(cli), "--download", "--import", "--activities", "--analyze"]
+        _sync_log("garmindb", "running " + " ".join(cmd))
+        print("sync: running", " ".join(cmd), flush=True)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        tail = []
+        for line in proc.stdout:
+            print("sync: garmindb:", line.rstrip(), flush=True)
+            tail.append(line)
+            tail = tail[-20:]
+        proc.wait()
+        if proc.returncode != 0:
+            detail = "".join(tail)[-2000:]
+            print("sync: garmindb failed:", detail, flush=True)
+            _sync_log("failed", "garmindb download/import failed")
+            return {"ok": False, "error": "garmindb download/import failed", "detail": detail}
+        _sync_log("analysis", "garmindb done, analyzing climbs")
+        print("sync: garmindb done", flush=True)
+    elif config.GARMINDB_CLI:
+        return {"ok": False, "error": f"garmindb_cli not found: {config.GARMINDB_CLI}"}
+    else:
+        # No CLI configured: just re-run analysis over existing DB contents.
+        print("sync: no garmindb_cli configured, analyzing existing DB", flush=True)
+        _sync_log("analysis", "no garmindb_cli configured, analyzing existing DB")
+
+    # Snapshot previously analyzed activities before re-analyzing.
+    prev_data = _load_climbs()
+    old_ids = {a.get("activity_id") for a in prev_data.get("activities", [])}
+    old_climb_count = sum(a.get("climb_count", 0) for a in prev_data.get("activities", []))
+
+    # Incremental climb analysis then rebuild groups.
+    _sync_log("analysis", "detecting climbs")
+    analyze_climbs.main()
+    _sync_log("groups", "grouping climbs")
+    groups, mapping = climb_groups.build_groups(get_climbs_with_overrides())
+    climb_groups.save_groups(groups, mapping)
+
+    new_data = _load_climbs()
+    new_ids = {a.get("activity_id") for a in new_data.get("activities", [])}
+    new_climb_count = sum(a.get("climb_count", 0) for a in new_data.get("activities", []))
+
+    _sync_log("done", "sync complete")
+    return {
+        "ok": True,
+        "new_activities": len(new_ids - old_ids),
+        "total_activities": new_data.get("activity_count", len(new_ids)),
+        "new_climbs": new_climb_count - old_climb_count,
+        "total_climbs": new_climb_count,
+        "groups": len(groups),
+    }
+
+
 if __name__ == "__main__":
-    port = 8080
+    port = config.PORT
     print(f"Serving at http://127.0.0.1:{port}/")
     HTTPServer(("127.0.0.1", port), Handler).serve_forever()

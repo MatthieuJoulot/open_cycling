@@ -1,4 +1,4 @@
-import { fetchProfile } from '../utils/api.js';
+import { fetchProfile, startSync, fetchSyncStatus } from '../utils/api.js';
 import { fmtDistance, fmtDuration, fmtElevation } from '../utils/format.js';
 
 let profileData = null;
@@ -69,6 +69,10 @@ export async function renderSidebar(activeSection = 'feed') {
         </div>
       </div>
 
+      <button id="sync-btn" class="btn btn-primary w-100 mb-3">
+        <span id="sync-btn-label">Sync new activities</span>
+      </button>
+
       <div class="list-group">
         <a href="#feed" class="list-group-item list-group-item-action ${activeSection === 'feed' ? 'active' : ''}">Feed</a>
         <a href="#climbs" class="list-group-item list-group-item-action ${activeSection === 'climbs' ? 'active' : ''}">Climbs</a>
@@ -78,6 +82,98 @@ export async function renderSidebar(activeSection = 'feed') {
       </div>
     </div>
   `;
+
+  document.getElementById('sync-btn').addEventListener('click', onSyncClick);
+}
+
+let syncing = false;
+
+const PHASE_LABELS = {
+  starting: 'Starting…',
+  garmindb: 'Downloading from Garmin Connect…',
+  analysis: 'Detecting climbs…',
+  groups: 'Grouping climbs…',
+  done: 'Done',
+  failed: 'Failed',
+};
+
+async function onSyncClick() {
+  const btn = document.getElementById('sync-btn');
+  const label = document.getElementById('sync-btn-label');
+  if (!btn || syncing) return;
+
+  syncing = true;
+  btn.disabled = true;
+  label.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>Syncing…';
+
+  try {
+    const started = await startSync();
+    if (!started.ok) throw new Error(started.error || 'Failed to start sync');
+    await pollSyncUntilDone(label);
+  } catch (e) {
+    showSyncToast(e.message || 'Sync failed', 'danger');
+  } finally {
+    syncing = false;
+    const btnAfter = document.getElementById('sync-btn');
+    if (btnAfter) {
+      btnAfter.disabled = false;
+      document.getElementById('sync-btn-label').textContent = 'Sync new activities';
+    }
+  }
+}
+
+async function pollSyncUntilDone(label) {
+  while (true) {
+    await new Promise(r => setTimeout(r, 3000));
+    let status;
+    try {
+      status = await fetchSyncStatus();
+    } catch (e) {
+      showSyncToast('Lost connection to server', 'danger');
+      return;
+    }
+    if (status.running) {
+      const phase = PHASE_LABELS[status.phase] || 'Syncing…';
+      label.innerHTML = `<span class="spinner-border spinner-border-sm me-2" role="status"></span>${phase}`;
+      continue;
+    }
+    if (status.result && status.result.ok) {
+      const r = status.result;
+      const parts = [];
+      parts.push(r.new_activities > 0 ? `${r.new_activities} new ride${r.new_activities > 1 ? 's' : ''}` : 'no new rides');
+      if (r.new_climbs > 0) parts.push(`${r.new_climbs} new climb${r.new_climbs > 1 ? 's' : ''}`);
+      showSyncToast(parts.join(', '), 'success');
+      profileData = null;
+      await renderSidebar(location.hash.replace('#', '') || 'feed');
+    } else {
+      showSyncToast((status.result && status.result.error) || status.error || 'Sync failed', 'danger');
+    }
+    return;
+  }
+}
+
+function showSyncToast(message, variant) {
+  let container = document.getElementById('sync-toast-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'sync-toast-container';
+    container.className = 'toast-container position-fixed top-0 end-0 p-3';
+    container.style.zIndex = '1090';
+    document.body.appendChild(container);
+  }
+  const toast = document.createElement('div');
+  toast.className = `toast align-items-center text-bg-${variant} border-0`;
+  toast.setAttribute('role', 'alert');
+  toast.innerHTML = `
+    <div class="d-flex">
+      <div class="toast-body">${message}</div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+    </div>
+  `;
+  container.appendChild(toast);
+  const bsToast = new bootstrap.Toast(toast, { delay: 5000 });
+  bsToast.show();
+  toast.addEventListener('hidden.bs.toast', () => toast.remove());
 }
 
 export function hideSidebar() {

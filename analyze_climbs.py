@@ -6,7 +6,9 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
-DB_PATH = Path.home() / "llm/bike/HealthData/DBs/garmin_activities.db"
+import config
+
+DB_PATH = config.ACTIVITIES_DB
 OUT_PATH = Path(__file__).with_name("climbs.json")
 
 # Detection parameters
@@ -290,6 +292,16 @@ def main():
         """
     ).fetchall()
 
+    # Load previous results so unchanged activities can be skipped.
+    previous = {}
+    if OUT_PATH.exists():
+        try:
+            old_data = json.loads(OUT_PATH.read_text(encoding="utf-8"))
+            for act in old_data.get("activities", []):
+                previous[act["activity_id"]] = act
+        except Exception:
+            previous = {}
+
     result = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "activity_count": len(activities),
@@ -297,8 +309,23 @@ def main():
         "activities": [],
     }
 
+    n_analyzed = 0
+    n_skipped = 0
+
     for idx, act in enumerate(activities, 1):
-        print(f"[{idx}/{len(activities)}] {act['activity_id']} {act['name']}", flush=True)
+        activity_id = act["activity_id"]
+        old = previous.get(activity_id)
+
+        # Skip if the activity was already analyzed and no ride is newer than it
+        # (records are immutable once in GarminDB, so old rides never change).
+        newest_time = activities[0]["start_time"]
+        if old is not None and act["start_time"] != newest_time:
+            result["climb_count"] += len(old.get("climbs", []))
+            result["activities"].append(old)
+            n_skipped += 1
+            continue
+
+        print(f"[{idx}/{len(activities)}] {activity_id} {act['name']}", flush=True)
         records = cur.execute(
             """
             SELECT distance, altitude, position_lat, position_long
@@ -306,7 +333,7 @@ def main():
             WHERE activity_id = ?
             ORDER BY record
             """,
-            (act["activity_id"],),
+            (activity_id,),
         ).fetchall()
 
         distance_m = [r["distance"] * 1000 if r["distance"] is not None else None for r in records]
@@ -315,9 +342,10 @@ def main():
         lons = [r["position_long"] for r in records]
 
         climbs = detect_climbs(distance_m, altitude, lats, lons)
+        n_analyzed += 1
         result["climb_count"] += len(climbs)
         result["activities"].append({
-            "activity_id": act["activity_id"],
+            "activity_id": activity_id,
             "name": act["name"],
             "start_time": act["start_time"],
             "distance_km": round(act["distance"], 2) if act["distance"] else None,
@@ -336,7 +364,10 @@ def main():
         })
 
     OUT_PATH.write_text(json.dumps(result, indent=2), encoding="utf-8")
-    print(f"Wrote {OUT_PATH} with {result['climb_count']} climbs from {result['activity_count']} rides.")
+    print(
+        f"Wrote {OUT_PATH}: {result['climb_count']} climbs from "
+        f"{result['activity_count']} rides ({n_analyzed} analyzed, {n_skipped} skipped)."
+    )
 
 
 if __name__ == "__main__":
