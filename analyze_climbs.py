@@ -362,16 +362,27 @@ def main(full=False):
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    activities = cur.execute(
-        """
-        SELECT activity_id, name, start_time, distance, ascent, descent,
-               moving_time, elapsed_time, avg_speed, max_speed, avg_hr, max_hr,
-               start_lat, start_long
-        FROM activities
-        WHERE sport = 'cycling'
-        ORDER BY start_time DESC
-        """
-    ).fetchall()
+    # User-deleted activities never come back, even if a sync re-imports
+    # them into GarminDB.
+    try:
+        import activity_store
+        ignored = activity_store.load_ignored()
+    except Exception:
+        ignored = set()
+
+    activities = [
+        act for act in cur.execute(
+            """
+            SELECT activity_id, name, start_time, distance, ascent, descent,
+                   moving_time, elapsed_time, avg_speed, max_speed, avg_hr, max_hr,
+                   start_lat, start_long
+            FROM activities
+            WHERE sport = 'cycling'
+            ORDER BY start_time DESC
+            """
+        ).fetchall()
+        if str(act["activity_id"]) not in ignored
+    ]
 
     # Load previous results so unchanged activities can be skipped.
     previous = {}

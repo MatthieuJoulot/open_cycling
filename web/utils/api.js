@@ -135,3 +135,9 @@ export async function fetchValidatedClimbs() {
   if (!res.ok) throw new Error('Failed to load validated climbs');
   return res.json();
 }
+
+export async function deleteActivity(id) {
+  const res = await fetch(`${BASE}/api/activity/${id}/delete`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to delete activity');
+  return res.json();
+}

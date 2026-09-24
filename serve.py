@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import analyze_climbs
+import activity_store
 import climb_groups
 import config
 import osm_lookup
@@ -210,6 +211,22 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_error(404, "Validated climb not found")
                 return
             self._send_json(json.dumps({"deleted": True}))
+            return
+
+        if path.startswith("/api/activity/") and path.endswith("/delete"):
+            activity_id = path.split("/")[-2]
+            if not activity_id.isdigit():
+                self.send_error(400, "Invalid activity id")
+                return
+            summary = activity_store.delete_activity_locally(activity_id)
+            activity_store.remove_activity_from_analysis(activity_id)
+            try:
+                groups, mapping = climb_groups.build_groups(get_climbs_with_overrides())
+                climb_groups.save_groups(groups, mapping)
+                summary["groups"] = len(groups)
+            except Exception as exc:
+                print("group rebuild after delete warning:", exc)
+            self._send_json(json.dumps(summary))
             return
 
         self.send_error(404, "Not found")

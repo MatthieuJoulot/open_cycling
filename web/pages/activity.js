@@ -1,4 +1,4 @@
-import { fetchActivityDetails, fetchActivityRecords, fetchClimbNames, saveClimbName, identifySegments, saveSegment, validateClimb } from '../utils/api.js';
+import { fetchActivityDetails, fetchActivityRecords, fetchClimbNames, saveClimbName, identifySegments, saveSegment, validateClimb, deleteActivity } from '../utils/api.js';
 import { openSegmentEditor } from '../components/segmentEditor.js?v=2';
 import { fmtDate, fmtTime, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr } from '../utils/format.js';
 
@@ -83,6 +83,7 @@ export async function renderActivity(activityId) {
   const records = await fetchActivityRecords(activityId, 'distance,altitude,hr,speed,timestamp,position_lat,position_long', 3000);
 
   renderHeader(details);
+  setupDeleteActivity(activityId, details.activity);
   renderClimbsTable(activityId, details.climbs || [], records);
   renderLapsTable(details.laps || []);
   renderMap(records, details.climbs || []);
@@ -102,9 +103,14 @@ function renderHeader(details) {
   }).join('');
 
   header.innerHTML = `
-    <h3>${act.name || 'Ride'}</h3>
-    <p class="text-muted mb-2">${fmtDate(act.start_time)} · ${fmtTime(act.start_time)}</p>
-    ${deviceBadges ? `<div class="mb-3">${deviceBadges}</div>` : ''}
+    <div class="d-flex justify-content-between align-items-start">
+      <div>
+        <h3>${act.name || 'Ride'}</h3>
+        <p class="text-muted mb-2">${fmtDate(act.start_time)} · ${fmtTime(act.start_time)}</p>
+        ${deviceBadges ? `<div class="mb-3">${deviceBadges}</div>` : ''}
+      </div>
+      <button id="delete-activity-btn" class="btn btn-sm btn-outline-danger" title="Delete this activity locally">Delete</button>
+    </div>
     <div class="row g-2">
       <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtDistance(act.distance)}</div><div class="stat-label">Distance</div></div></div>
       <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtDuration(act.moving_time)}</div><div class="stat-label">Moving time</div></div></div>
@@ -116,6 +122,27 @@ function renderHeader(details) {
       <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtElevation(act.descent)}</div><div class="stat-label">Descent</div></div></div>
     </div>
   `;
+}
+
+function setupDeleteActivity(activityId, act) {
+  const btn = document.getElementById('delete-activity-btn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const label = act?.name || 'this activity';
+    const ok = confirm(`Delete "${label}" locally?\n\nRemoves it from the analyzer, GarminDB and downloaded files. The ride stays on Garmin Connect, but syncs will not re-import it.`);
+    if (!ok) return;
+    btn.disabled = true;
+    btn.textContent = 'Deleting…';
+    try {
+      await deleteActivity(activityId);
+      window.location.hash = '#feed';
+      window.location.reload();
+    } catch (err) {
+      alert(err.message || 'Delete failed');
+      btn.disabled = false;
+      btn.textContent = 'Delete';
+    }
+  });
 }
 
 function renderClimbsTable(activityId, climbs, records) {
