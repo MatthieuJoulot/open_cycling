@@ -69,12 +69,12 @@ Both work the same way: click **"Sync new activities"** in the left sidebar.
 
 The button:
 
-1. Runs `garmindb_cli.py --download --import --activities --analyze` (fetches anything new from Garmin Connect).
+1. Runs `garmindb_cli.py --download --import --activities --analyze --latest` (fetches the most recent activities from Garmin Connect; already-downloaded ones are skipped without a request).
 2. Re-detects climbs — only rides not analyzed before are processed, so incremental syncs are fast.
 3. Rebuilds climb groups.
 4. Shows a toast with the number of new rides and new climbs.
 
-Note: GarminDB re-checks every activity against Garmin Connect on each run, so step 1 takes several minutes even when nothing is new. The UI stays responsive and shows progress.
+With `sync_latest` (default `true` in `config.json`), GarminDB only walks the 25 most recent activities (`download_latest_activities` in `~/.GarminDb/GarminConnectConfig.json`) instead of the whole history, so a sync with nothing new takes ~1 minute. If you record more activities than that between two syncs — or want to bulk-import old history — set `"sync_latest": false` and run one full sync.
 
 ## Files
 

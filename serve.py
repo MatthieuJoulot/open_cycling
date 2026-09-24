@@ -898,6 +898,11 @@ def run_sync():
         venv_python = cli.parent / "python"
         interpreter = str(venv_python) if venv_python.exists() else sys.executable
         cmd = [interpreter, str(cli), "--download", "--import", "--activities", "--analyze"]
+        if config.SYNC_LATEST:
+            # Only fetch the most recent activities (config:
+            # download_latest_activities in GarminConnectConfig.json) instead
+            # of walking the entire history every sync.
+            cmd.append("--latest")
         _sync_log("garmindb", "running " + " ".join(cmd))
         print("sync: running", " ".join(cmd), flush=True)
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

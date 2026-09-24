@@ -13,6 +13,7 @@ DEFAULTS = {
     "personal_info_json": "~/llm/bike/HealthData/FitFiles/personal-information.json",
     "garmindb_cli": "",
     "port": 8080,
+    "sync_latest": True,
 }
 
 ENV_VARS = {
@@ -50,3 +51,4 @@ FIT_DIR = _expand(_cfg["fit_dir"])
 PERSONAL_INFO_JSON = _expand(_cfg["personal_info_json"])
 GARMINDB_CLI = Path(_cfg["garmindb_cli"]).expanduser() if _cfg["garmindb_cli"] else None
 PORT = int(_cfg["port"])
+SYNC_LATEST = bool(_cfg["sync_latest"])
