@@ -147,15 +147,18 @@ function flattenClimbs(activities) {
       .map(k => keyToOccurrence[k])
       .filter(o => o != null);
     if (occurrences.length === 0) return null;
-    const latest = occurrences.slice().sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0))[0];
-    const nameEntry = allNames[latest.key];
+    const sorted = occurrences.slice().sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0));
+    // Prefer a validated occurrence as representative: its name and segment
+    // bounds are the canonical, user-confirmed ones.
+    const rep = sorted.find(o => o.validated_climb_id) || sorted[0];
+    const nameEntry = allNames[rep.key];
     return {
-      ...latest,
-      key: latest.key,
-      name: nameEntry?.name || null,
-      lastClimbed: latest.startTime,
+      ...rep,
+      key: rep.key,
+      name: rep.validated_name || nameEntry?.name || null,
+      lastClimbed: sorted[0].startTime,
       groupSize: groupKeys.length,
-      region: allRegions[latest.key] || '—',
+      region: allRegions[rep.key] || '—',
     };
   }
 

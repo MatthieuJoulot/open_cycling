@@ -100,8 +100,9 @@ export async function renderClimb(key) {
   const [matches, names] = await Promise.all([fetchClimbMatches(key), fetchAllClimbNames()]);
   const members = matches.members || [];
   const nameEntry = names[key];
+  const validatedName = members.find(m => m.validated_name)?.validated_name || null;
   const title = document.getElementById('climb-title');
-  title.textContent = nameEntry?.name || `Climb on ${members[0] ? fmtDate(members[0].start_time) : 'unknown ride'}`;
+  title.textContent = validatedName || nameEntry?.name || `Climb on ${members[0] ? fmtDate(members[0].start_time) : 'unknown ride'}`;
 
   renderStats(members, matches.count);
   await renderSegmentDetails(members);

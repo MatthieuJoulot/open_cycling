@@ -511,6 +511,7 @@ def get_climb_matches(key):
     # Build reverse lookup from climbs.json by key, applying user edits so
     # modified/added segments are what the climb page actually shows.
     data = _load_climbs()
+    validated = validated_store.get_validated_list()
     climbs_by_key = {}
     for act in data.get("activities", []):
         activity_id = act.get("activity_id")
@@ -523,6 +524,7 @@ def get_climb_matches(key):
         c = climbs_by_key.get(k)
         if not c:
             continue
+        _apply_validated_names([c], validated)
         perf = _compute_climb_performance(c["activity_id"], c["start_distance_m"], c["end_distance_m"])
         results.append({**c, **perf})
     results.sort(key=lambda x: x.get("start_time") or "")
