@@ -2,6 +2,7 @@
 """Detect climbs in cycling activities stored by GarminDB."""
 import json
 import sqlite3
+import sys
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,8 @@ STOP_GRADE = 1.0            # % grade below which a climb ends
 MIN_LENGTH_M = 300          # minimum climb length in meters
 MIN_AVG_GRADE = 2.5         # minimum average grade for a climb
 SCORE_THRESHOLD = 8000      # Strava-style: length(m) * avg_grade(%) > 8000
+MERGE_GAP_M = 500           # max distance between climbs to merge across a false flat
+MERGE_DIP_M = 30            # max altitude lost in the gap for merging to apply
 
 
 def grade_category(score: float) -> str:
@@ -107,7 +110,7 @@ def detect_climbs(distance_m, altitude, lat, lon,
         if not in_climb:
             if grade >= start_grade:
                 in_climb = True
-                start_idx = i - 1
+                start_idx = _look_back_start(points, smoothed, i - 1, start_grade)
                 max_grade = grade
         else:
             if grade > max_grade:
@@ -123,8 +126,41 @@ def detect_climbs(distance_m, altitude, lat, lon,
     return merge_envelopes(raw, points)
 
 
+def _look_back_start(points, smoothed, detected_idx, gentle_grade=0.5, max_lookback_m=3000):
+    """Walk backwards from the detected climb start to capture the true foot.
+
+    A climb often starts with a gentle run-in (2-3%) below the detection
+    threshold. Extend the start backwards while the road is still rising at
+    least `gentle_grade` percent (smoothed), stopping at any sustained dip.
+    """
+    idx = detected_idx
+    limit_d = points[idx]["d"] - max_lookback_m
+
+    while idx > 0 and points[idx - 1]["d"] >= limit_d:
+        # Average grade over the segment between idx-1 and idx; the smoothed
+        # series already filters single-point noise.
+        d = points[idx]["d"] - points[idx - 1]["d"]
+        if d <= 0.1:
+            idx -= 1
+            continue
+        g = (smoothed[idx] - smoothed[idx - 1]) / d * 100
+        if g >= gentle_grade:
+            idx -= 1
+        else:
+            break
+
+    return idx
+
+
 def merge_envelopes(climbs, points=None):
-    """Merge overlapping/nested/adjacent climb sections into longest envelopes."""
+    """Merge overlapping/nested/adjacent climb sections into longest envelopes.
+
+    A second, relaxed pass bridges small gaps: two climbs separated by a short
+    false flat or dip (village, hairpin, respite stretch) are merged into one
+    envelope if the altitude lost in the gap is small and the combined result
+    still climbs meaningfully. This reconstructs big cols (e.g. Tourmalet)
+    that detection splits at gentle interludes.
+    """
     if not climbs:
         return []
 
@@ -141,13 +177,58 @@ def merge_envelopes(climbs, points=None):
                 last["end_lon"] = c["end_lon"]
             if c["max_grade_percent"] > last["max_grade_percent"]:
                 last["max_grade_percent"] = c["max_grade_percent"]
+        elif points and _bridgeable(last, c, points):
+            last["end_distance_m"] = c["end_distance_m"]
+            last["end_lat"] = c["end_lat"]
+            last["end_lon"] = c["end_lon"]
+            if c["max_grade_percent"] > last["max_grade_percent"]:
+                last["max_grade_percent"] = c["max_grade_percent"]
         else:
             merged.append(c)
 
     # Recompute metrics for merged envelopes so length/gain/avg_grade reflect the union.
     if points:
-        return [_recompute_envelope(c, points) for c in merged]
+        merged = [_recompute_envelope(c, points) for c in merged]
+        # Drop envelopes that fell below the climb bar after recomputation.
+        merged = [c for c in merged if c["length_m"] >= MIN_LENGTH_M and c["avg_grade_percent"] >= MIN_AVG_GRADE]
     return merged
+
+
+def _bridgeable(a, b, points):
+    """True when the gap between climb a and climb b is a short false flat/dip.
+
+    Conditions: gap length within MERGE_GAP_M, altitude lost within
+    MERGE_DIP_M, and the combined envelope still averages at least
+    MIN_AVG_GRADE. Combined gain is measured on the altitude series, not from
+    the pieces' possibly-stale elevation_gain_m (they may already be merged
+    envelopes whose gain was not accumulated).
+    """
+    gap_len = b["start_distance_m"] - a["end_distance_m"]
+    if gap_len <= 50 or gap_len > MERGE_GAP_M:
+        return False
+
+    pts = sorted([p for p in points if p["d"] is not None and p["a"] is not None], key=lambda p: p["d"])
+    env_pts = [p for p in pts if a["start_distance_m"] <= p["d"] <= b["end_distance_m"]]
+    if len(env_pts) < 2:
+        return False
+
+    gap_pts = [p for p in pts if a["end_distance_m"] <= p["d"] <= b["start_distance_m"]]
+    if len(gap_pts) < 2:
+        return False
+
+    # Altitude lost in the gap: highest point of the gap minus altitude at b's start.
+    gap_max = max(p["a"] for p in gap_pts)
+    dip_lost = gap_max - gap_pts[-1]["a"]
+    if dip_lost > MERGE_DIP_M:
+        return False
+
+    # Combined envelope must still be a real climb.
+    combined_len = b["end_distance_m"] - a["start_distance_m"]
+    if combined_len <= 0:
+        return False
+    combined_gain = env_pts[-1]["a"] - env_pts[0]["a"]
+    combined_avg = combined_gain / combined_len * 100
+    return combined_avg >= MIN_AVG_GRADE
 
 
 def _recompute_envelope(climb, points):
@@ -276,7 +357,7 @@ def _time_to_seconds(value):
     return None
 
 
-def main():
+def main(full=False):
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
@@ -294,7 +375,7 @@ def main():
 
     # Load previous results so unchanged activities can be skipped.
     previous = {}
-    if OUT_PATH.exists():
+    if not full and OUT_PATH.exists():
         try:
             old_data = json.loads(OUT_PATH.read_text(encoding="utf-8"))
             for act in old_data.get("activities", []):
@@ -371,4 +452,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(full="--full" in sys.argv)

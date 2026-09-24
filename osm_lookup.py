@@ -393,7 +393,10 @@ def _name_from_features_top(climb, features):
     for f in features:
         dist_end = _haversine(end_lat, end_lon, f["lat"], f["lon"])
         dist_start = _haversine(start_lat, start_lon, f["lat"], f["lon"])
-        f = {**f, "distance": min(dist_end, dist_start)}
+        # Prefer features at the climb top; features near the start are only
+        # considered when nothing matches the top (weighted 3x further away).
+        dist = dist_end if dist_end <= 600 else min(dist_end * 3, dist_start)
+        f = {**f, "distance": dist}
         if f["kind"] != "road":
             mountain.append(f)
         else:
@@ -402,11 +405,24 @@ def _name_from_features_top(climb, features):
     MOUNTAIN_THRESHOLD = 600  # metres
     ROAD_THRESHOLD = 1500
 
-    def _mountain_score(kind):
-        return {"mountain_pass": 3, "saddle": 2, "peak": 1}.get(kind, 0)
+    def _kind_rank(kind, distance):
+        # Named cols/passes/saddles are the best climb names; peaks are decent
+        # but can sit far off-road; places (villages, ski areas, localities)
+        # name resort-top finishes well when they sit right at the top.
+        # A place within 250 m of the top beats a distant peak.
+        if kind == "mountain_pass":
+            return 0
+        if kind == "saddle":
+            return 0 if distance <= 400 else 1
+        if kind.startswith("place:"):
+            return 1 if distance <= 250 else 3
+        if kind == "peak":
+            return 2
+        return 4
 
     if mountain:
-        mountain.sort(key=lambda f: (-_mountain_score(f["kind"]), f["distance"]))
+        # Sort by (rank, distance).
+        mountain.sort(key=lambda f: (_kind_rank(f["kind"], f["distance"]), f["distance"]))
         best = mountain[0]
         if best["distance"] <= MOUNTAIN_THRESHOLD:
             return {"name": best["name"], "source": f"osm_top_{best['kind']}", "distance_m": round(best["distance"])}
@@ -442,7 +458,10 @@ def suggest_curated_name(climb):
     for c in cols:
         d_end = _haversine(end_lat, end_lon, c["lat"], c["lon"])
         d_start = _haversine(start_lat, start_lon, c["lat"], c["lon"])
-        d = min(d_end, d_start)
+        # A col at the climb top names the climb; a col near the start only
+        # disambiguates when nothing matches the top (e.g. steep roadside
+        # wall starting just below a pass). Weight the top match heavily.
+        d = d_end if d_end <= 600 else min(d_end * 3, d_start)
         if d < best_dist:
             best_dist = d
             best = c
