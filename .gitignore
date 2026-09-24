@@ -5,6 +5,7 @@ climbs.json
 climb_groups.json
 climb_names.json
 climb_segments.json
+validated_climbs.json
 cols.json
 .cache/
 .DS_Store

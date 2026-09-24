@@ -101,7 +101,7 @@ def _overpass(query):
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=15) as resp:
                 text = resp.read().decode("utf-8")
             parsed = json.loads(text)
             if "elements" in parsed:

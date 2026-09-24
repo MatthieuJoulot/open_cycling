@@ -106,3 +106,32 @@ export async function fetchSyncStatus() {
   if (!res.ok) throw new Error('Failed to get sync status');
   return res.json();
 }
+
+export async function validateClimb(id, startDistanceM, endDistanceM, name) {
+  const res = await fetch(`${BASE}/api/activity/${id}/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ start_distance_m: startDistanceM, end_distance_m: endDistanceM, name }),
+  });
+  if (!res.ok) {
+    let detail = 'Validation failed';
+    try {
+      const body = await res.json();
+      if (body && (body.error || body.message)) detail = body.error || body.message;
+    } catch (e) { /* ignore */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+export async function deleteValidatedClimb(climbId) {
+  const res = await fetch(`${BASE}/api/validated-climbs/${climbId}/delete`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to delete validated climb');
+  return res.json();
+}
+
+export async function fetchValidatedClimbs() {
+  const res = await fetch(`${BASE}/api/validated-climbs`);
+  if (!res.ok) throw new Error('Failed to load validated climbs');
+  return res.json();
+}

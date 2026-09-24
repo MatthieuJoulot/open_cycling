@@ -1,4 +1,4 @@
-import { fetchActivityDetails, fetchActivityRecords, fetchClimbNames, saveClimbName, identifySegments, saveSegment } from '../utils/api.js';
+import { fetchActivityDetails, fetchActivityRecords, fetchClimbNames, saveClimbName, identifySegments, saveSegment, validateClimb } from '../utils/api.js';
 import { openSegmentEditor } from '../components/segmentEditor.js?v=2';
 import { fmtDate, fmtTime, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr } from '../utils/format.js';
 
@@ -143,6 +143,7 @@ function renderClimbsTable(activityId, climbs, records) {
         <a href="#climb/${key}" class="climb-name-link text-decoration-none text-muted">Unnamed segment</a>
         <button class="btn btn-sm btn-link py-0 climb-edit-btn" title="Edit name">✎</button>
         <button class="btn btn-sm btn-link py-0 climb-modify-btn" title="Modify segment on map">🗺</button>
+        <button class="btn btn-sm btn-link py-0 climb-validate-btn text-success" title="Validate as canonical named climb">✓</button>
       </td>
       <td><span class="badge bg-secondary category-badge">${c.category}</span></td>
       <td>${(c.start_distance_m / 1000).toFixed(1)}</td>
@@ -152,11 +153,20 @@ function renderClimbsTable(activityId, climbs, records) {
       <td>${fmtGrade(c.max_grade_percent)}</td>
       <td>${vam ? Math.round(vam) + ' m/h' : '-'}</td>
     `;
+    if (c.validated_climb_id) {
+      const cell = row.querySelector('.climb-name-cell');
+      const link = cell.querySelector('.climb-name-link');
+      link.textContent = c.validated_name;
+      link.className = 'climb-name-link text-decoration-none fw-semibold';
+      const vbtn = cell.querySelector('.climb-validate-btn');
+      vbtn.outerHTML = `<span class="badge bg-success ms-1" title="Validated">✓</span>`;
+    }
     tbody.appendChild(row);
   }
 
   tbody.addEventListener('click', handleClimbNameEditClick);
   tbody.addEventListener('click', e => handleClimbModifyClick(e, records));
+  tbody.addEventListener('click', handleClimbValidateClick);
 }
 
 async function handleClimbModifyClick(e, records) {
@@ -338,8 +348,44 @@ function updateClimbNameCells(names) {
     // keep edit/modify buttons after update
     const cell = link.closest('.climb-name-cell');
     if (cell && !cell.querySelector('.climb-edit-btn')) {
-      cell.insertAdjacentHTML('beforeend', ' <button class="btn btn-sm btn-link py-0 climb-edit-btn" title="Edit name">✎</button> <button class="btn btn-sm btn-link py-0 climb-modify-btn" title="Modify segment on map">🗺</button>');
+      cell.insertAdjacentHTML('beforeend', ' <button class="btn btn-sm btn-link py-0 climb-edit-btn" title="Edit name">✎</button> <button class="btn btn-sm btn-link py-0 climb-modify-btn" title="Modify segment on map">🗺</button> <button class="btn btn-sm btn-link py-0 climb-validate-btn text-success" title="Validate as canonical named climb">✓</button>');
     }
+  }
+}
+
+function handleClimbValidateClick(e) {
+  const btn = e.target.closest('.climb-validate-btn');
+  if (!btn) return;
+  const row = btn.closest('tr');
+  if (!row) return;
+  const activityId = row.dataset.climbKey.split(':')[0];
+  const start = parseFloat(row.dataset.startDistance);
+  const end = parseFloat(row.dataset.endDistance);
+  const link = row.querySelector('.climb-name-link');
+  let current = link && link.textContent.trim() !== 'Unnamed segment' ? link.textContent.trim() : '';
+  if (current === 'Unnamed segment') current = '';
+
+  const doValidate = async (name) => {
+    btn.disabled = true;
+    try {
+      await validateClimb(activityId, start, end, name);
+      const cell = row.querySelector('.climb-name-cell');
+      const link2 = cell.querySelector('.climb-name-link');
+      link2.textContent = name;
+      link2.className = 'climb-name-link text-decoration-none fw-semibold';
+      btn.outerHTML = '<span class="badge bg-success ms-1" title="Validated">✓</span>';
+    } catch (err) {
+      alert(err.message || 'Validation failed');
+      btn.disabled = false;
+    }
+  };
+
+  if (!current) {
+    const name = prompt('Give this climb a name to validate it:');
+    if (!name || !name.trim()) return;
+    doValidate(name.trim());
+  } else {
+    doValidate(current);
   }
 }
 

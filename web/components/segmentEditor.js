@@ -56,12 +56,13 @@ export function openSegmentEditor({ activityId, records, startDistanceM, endDist
 
     modalEl.addEventListener('hidden.bs.modal', () => {
       modalEl.remove();
-      resolve();
+      resolve(editorState && editorState.savedSegment ? editorState.savedSegment : null);
     });
 
+    let editorState = null;
     try {
-      console.log('openSegmentEditor records', { count: records.length, sample: records[0], fields: Object.keys(records[0] || {}) });
       const { map, chart, state } = initMap({ activityId, records, startDistanceM, endDistanceM, onSave });
+      editorState = state;
       modalEl.addEventListener('shown.bs.modal', () => {
         if (!map || !state) return;
         map.invalidateSize();
@@ -235,8 +236,9 @@ function initMap({ activityId, records, startDistanceM, endDistanceM, onSave }) 
     try {
       const start = Math.min(state.startDistanceM, state.endDistanceM);
       const end = Math.max(state.startDistanceM, state.endDistanceM);
-      await saveSegment(activityId, start, end, state.originalStartDistanceM, state.originalEndDistanceM);
-      if (onSave) onSave();
+      const saved = await saveSegment(activityId, start, end, state.originalStartDistanceM, state.originalEndDistanceM);
+      state.savedSegment = saved;
+      if (onSave) onSave(saved);
       const modalEl = document.getElementById('segment-editor-modal');
       if (modalEl) window.bootstrap.Modal.getInstance(modalEl).hide();
     } catch (err) {

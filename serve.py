@@ -18,6 +18,7 @@ import config
 import osm_lookup
 import regions
 import segment_store
+import validated_store
 
 ROOT = Path(__file__).parent / "web"
 CLIMBS_JSON = Path(__file__).parent / "climbs.json"
@@ -47,6 +48,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/climb-groups":
             self._send_json(json.dumps(get_climb_groups()))
+            return
+        if path == "/api/validated-climbs":
+            self._send_json(json.dumps(validated_store.get_validated_list()))
             return
         if path == "/api/regions":
             self._send_json(json.dumps(get_regions()))
@@ -173,6 +177,41 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(json.dumps(started))
             return
 
+        if path.startswith("/api/activity/") and path.endswith("/validate"):
+            activity_id = path.split("/")[-2]
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8")
+            try:
+                payload = json.loads(body)
+            except Exception as exc:
+                self.send_error(400, f"Invalid JSON: {exc}")
+                return
+            start = payload.get("start_distance_m")
+            end = payload.get("end_distance_m")
+            name = payload.get("name")
+            if start is None or end is None:
+                self.send_error(400, "Missing start_distance_m or end_distance_m")
+                return
+            if not name or not str(name).strip():
+                self.send_error(400, "A validated climb requires a name")
+                return
+            try:
+                entry = validate_climb_request(activity_id, start, end, str(name).strip())
+            except ValueError as exc:
+                self.send_error(400, str(exc))
+                return
+            self._send_json(json.dumps(entry))
+            return
+
+        if path.startswith("/api/validated-climbs/") and path.endswith("/delete"):
+            climb_id = path.split("/")[-2]
+            removed = validated_store.delete_validated(climb_id)
+            if not removed:
+                self.send_error(404, "Validated climb not found")
+                return
+            self._send_json(json.dumps({"deleted": True}))
+            return
+
         self.send_error(404, "Not found")
 
     def _send_json(self, body):
@@ -233,10 +272,28 @@ def _compute_segment(activity_id, start_m, end_m):
 
 
 def _recompute_after_segment_change(activity_id):
-    climbs = _find_activity_climbs(activity_id)
-    osm_lookup.refresh_names_for_activity(activity_id, climbs)
-    groups, mapping = climb_groups.build_groups(get_climbs_with_overrides())
-    climb_groups.save_groups(groups, mapping)
+    # Name refresh can hit Overpass (slow, occasionally hangs on big bboxes).
+    # Never block the segment save on it: run it in the background.
+    threading.Thread(
+        target=_refresh_names_and_groups,
+        args=(activity_id,),
+        daemon=True,
+    ).start()
+    # Group rebuild is local and fast; keep it synchronous so the UI that
+    # reloads right after saving sees consistent groups.
+    try:
+        groups, mapping = climb_groups.build_groups(get_climbs_with_overrides())
+        climb_groups.save_groups(groups, mapping)
+    except Exception as exc:
+        print("group rebuild warning:", exc)
+
+
+def _refresh_names_and_groups(activity_id):
+    try:
+        climbs = _find_activity_climbs(activity_id)
+        osm_lookup.refresh_names_for_activity(activity_id, climbs)
+    except Exception as exc:
+        print("name refresh warning:", exc)
 
 
 def _get_candidate_segments(activity_id):
@@ -333,11 +390,30 @@ def _load_climbs():
 
 def get_climbs_with_overrides():
     data = _load_climbs()
+    validated = validated_store.get_validated_list()
     for act in data.get("activities", []):
         activity_id = act.get("activity_id")
         auto_climbs = act.get("climbs", [])
-        act["climbs"] = segment_store.apply_overrides(activity_id, auto_climbs)
+        climbs = segment_store.apply_overrides(activity_id, auto_climbs)
+        _apply_validated_names(climbs, validated)
+        act["climbs"] = climbs
     return data
+
+
+def _apply_validated_names(climbs, validated):
+    """Attach validated names to matching climbs in place.
+
+    A validated name wins over any OSM/manual name: validation is the
+    strongest signal. The climb key records which validated entry matched.
+    """
+    if not validated:
+        return
+    for c in climbs:
+        for v in validated:
+            if climb_groups.climbs_match(v, c):
+                c["validated_name"] = v["name"]
+                c["validated_climb_id"] = v["climb_id"]
+                break
 
 
 def _find_activity_climbs(activity_id):
@@ -432,12 +508,13 @@ def get_climb_matches(key):
     if not member_keys:
         member_keys = [key]
 
-    # Build reverse lookup from climbs.json by key
+    # Build reverse lookup from climbs.json by key, applying user edits so
+    # modified/added segments are what the climb page actually shows.
     data = _load_climbs()
     climbs_by_key = {}
     for act in data.get("activities", []):
         activity_id = act.get("activity_id")
-        for c in act.get("climbs", []):
+        for c in segment_store.apply_overrides(activity_id, act.get("climbs", [])):
             k = f"{activity_id}:{int(round(c['start_distance_m']))}:{int(round(c['end_distance_m']))}"
             climbs_by_key[k] = {**c, "activity_id": activity_id, "activity_name": act.get("name"), "start_time": act.get("start_time")}
 
@@ -450,6 +527,15 @@ def get_climb_matches(key):
         results.append({**c, **perf})
     results.sort(key=lambda x: x.get("start_time") or "")
     return {"group_id": group_id, "count": len(results), "members": results}
+
+
+def validate_climb_request(activity_id, start_distance_m, end_distance_m, name):
+    """Validate the climb at the given range as a canonical named segment."""
+    climbs = _find_activity_climbs(activity_id)
+    climb = validated_store.find_climb(climbs, start_distance_m, end_distance_m)
+    if climb is None:
+        raise ValueError("No climb found at the given range in this activity")
+    return validated_store.validate_climb(activity_id, climb, name)
 
 
 def save_climb_name(activity_id, start_distance_m, end_distance_m, name):
@@ -530,6 +616,7 @@ def get_activity_details(activity_id):
             activity_climbs = act.get("climbs", [])
             break
     activity_climbs = segment_store.apply_overrides(activity_id, activity_climbs)
+    _apply_validated_names(activity_climbs, validated_store.get_validated_list())
 
     devices = []
     try:

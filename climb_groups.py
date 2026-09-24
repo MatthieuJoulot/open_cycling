@@ -24,6 +24,9 @@ def _climb_key(activity_id, climb):
 
 def climbs_match(a, b, start_tol=150, end_tol=150, length_tol=0.30, elevation_tol=0.30):
     """Return True if two climbs are the same real-world segment."""
+    if any(a.get(k) is None or b.get(k) is None
+           for k in ("start_lat", "start_lon", "end_lat", "end_lon")):
+        return False
     start_dist = _haversine(a["start_lat"], a["start_lon"], b["start_lat"], b["start_lon"])
     if start_dist > start_tol:
         return False

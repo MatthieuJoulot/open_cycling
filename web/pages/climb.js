@@ -1,4 +1,4 @@
-import { fetchClimbMatches, fetchAllClimbNames, fetchActivityRecords, saveClimbName } from '../utils/api.js';
+import { fetchClimbMatches, fetchAllClimbNames, fetchActivityRecords, saveClimbName, validateClimb, fetchValidatedClimbs } from '../utils/api.js';
 import { openSegmentEditor } from '../components/segmentEditor.js?v=2';
 import { fmtDate, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr } from '../utils/format.js';
 
@@ -27,6 +27,8 @@ export async function renderClimb(key) {
       <div class="d-flex align-items-center gap-2 mt-2 mb-3">
         <h3 id="climb-title" class="mb-0">Climb</h3>
         <button id="edit-climb-name-btn" class="btn btn-sm btn-link py-0" title="Edit name">✎</button>
+        <button id="validate-climb-btn" class="btn btn-sm btn-outline-success" title="Validate as canonical named climb">✓ Validate</button>
+        <span id="climb-validated-badge" class="badge bg-success d-none" title="Validated">✓ Validated</span>
       </div>
       <div id="climb-stats" class="row g-2 mb-3"></div>
 
@@ -105,6 +107,7 @@ export async function renderClimb(key) {
   await renderSegmentDetails(members);
   setupModifySegmentButton(members);
   setupClimbNameEdit(key, nameEntry);
+  await setupClimbValidate(key, nameEntry, members);
   renderPerfChart(members);
   renderPerformances(members);
 
@@ -191,6 +194,57 @@ function setupClimbNameEdit(key, nameEntry) {
   });
 }
 
+async function setupClimbValidate(key, nameEntry, members) {
+  const btn = document.getElementById('validate-climb-btn');
+  const badge = document.getElementById('climb-validated-badge');
+  if (!btn || !badge) return;
+  if (members.length === 0) { btn.classList.add('d-none'); return; }
+
+  const parts = key.split(':');
+  const activityId = parts[0];
+  const start = parseFloat(parts[1]);
+  const end = parseFloat(parts[2]);
+
+  // Already validated? Match against the registry by geometry.
+  try {
+    const validated = await fetchValidatedClimbs();
+    const rep = members[members.length - 1];
+    const isMatch = v =>
+      typeof v.start_lat === 'number' &&
+      Math.abs(v.start_lat - rep.start_lat) < 0.005 && Math.abs(v.start_lon - rep.start_lon) < 0.005 &&
+      Math.abs(v.end_lat - rep.end_lat) < 0.005 && Math.abs(v.end_lon - rep.end_lon) < 0.005;
+    if (validated.some(isMatch)) {
+      btn.classList.add('d-none');
+      badge.classList.remove('d-none');
+      return;
+    }
+  } catch (e) { /* registry fetch failed; keep the button */ }
+
+  btn.addEventListener('click', async () => {
+    const title = document.getElementById('climb-title');
+    let current = (nameEntry && nameEntry.name) || title.textContent.trim();
+    if (!current || current === 'Climb' || current.startsWith('Climb on')) current = '';
+    let name = current;
+    if (!name) {
+      name = prompt('Give this climb a name to validate it:');
+      if (!name || !name.trim()) return;
+      name = name.trim();
+    }
+    btn.disabled = true;
+    btn.textContent = 'Validating…';
+    try {
+      await validateClimb(activityId, start, end, name);
+      btn.classList.add('d-none');
+      badge.classList.remove('d-none');
+    } catch (err) {
+      alert(err.message || 'Validation failed');
+      btn.disabled = false;
+      btn.textContent = '✓ Validate';
+    }
+  });
+}
+
+
 function setupModifySegmentButton(members) {
   const btn = document.getElementById('modify-segment-btn');
   if (!btn || members.length === 0) return;
@@ -199,13 +253,21 @@ function setupModifySegmentButton(members) {
     btn.disabled = true;
     try {
       const records = await fetchActivityRecords(rep.activity_id, 'distance,altitude,position_lat,position_long', 3000);
-      await openSegmentEditor({
+      const saved = await openSegmentEditor({
         activityId: rep.activity_id,
         records,
         startDistanceM: rep.start_distance_m,
         endDistanceM: rep.end_distance_m,
-        onSave: () => window.location.reload(),
+        onSave: null,
       });
+      // Navigate to the new segment key (same activity, new start/end) so the
+      // page reflects the modified segment instead of the stale one.
+      const newKey = `${rep.activity_id}:${Math.round(saved.start_distance_m)}:${Math.round(saved.end_distance_m)}`;
+      if (newKey !== keyOf(members, rep)) {
+        window.location.hash = `#climb/${newKey}`;
+      } else {
+        window.location.reload();
+      }
     } catch (err) {
       console.error('Failed to open segment editor', err);
       alert('Could not open segment editor: ' + (err?.message || err));
@@ -213,6 +275,10 @@ function setupModifySegmentButton(members) {
       btn.disabled = false;
     }
   });
+}
+
+function keyOf(members, rep) {
+  return `${rep.activity_id}:${Math.round(rep.start_distance_m)}:${Math.round(rep.end_distance_m)}`;
 }
 
 function renderSegmentMap(container, segment) {
