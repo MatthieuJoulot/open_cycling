@@ -100,6 +100,9 @@ export async function renderClimbs() {
   allClimbs = flattenClimbs(climbsData.activities || []);
   renderList();
 
+  const listBody = document.getElementById('climbs-list-body');
+  listBody.addEventListener('click', onCountryToggle);
+  listBody.addEventListener('click', onRegionToggle);
   document.getElementById('climb-search').addEventListener('input', renderList);
   document.getElementById('climb-sort').addEventListener('change', renderList);
   document.getElementById('climb-group').addEventListener('change', onGroupChange);
@@ -245,10 +248,11 @@ function renderList() {
       }
       const rows = sortClimbs(grouped[region], sort);
       const regionId = 'region-' + region.toLowerCase().replace(/[^a-z0-9]/g, '-');
+      const countryClass = 'country-' + currentCountry.toLowerCase().replace(/[^a-z0-9]/g, '-');
       const heading = document.createElement('tr');
       heading.className = 'region-toggle';
+      heading.classList.add(countryClass);
       heading.dataset.region = regionId;
-      heading.dataset.country = currentCountry.toLowerCase().replace(/[^a-z0-9]/g, '-');
       heading.style.cursor = 'pointer';
       heading.innerHTML = `<td colspan="10" class="table-secondary fw-semibold ps-4">
         <span class="me-2">▼</span>${escapeHtml(region)} <span class="text-muted fw-normal">(${rows.length})</span>
@@ -256,12 +260,10 @@ function renderList() {
       tbody.appendChild(heading);
       for (const c of rows) {
         const row = buildClimbRow(c);
-        row.classList.add(regionId, 'country-' + currentCountry.toLowerCase().replace(/[^a-z0-9]/g, '-'));
+        row.classList.add(regionId, countryClass);
         tbody.appendChild(row);
       }
     }
-    tbody.addEventListener('click', onCountryToggle);
-    tbody.addEventListener('click', onRegionToggle);
   } else {
     const rows = sortClimbs(filtered, sort);
     for (const c of rows) tbody.appendChild(buildClimbRow(c));
