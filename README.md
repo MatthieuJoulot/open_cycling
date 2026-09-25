@@ -32,22 +32,32 @@ python3 -m venv ~/garmindb-venv
 ~/garmindb-venv/bin/pip install garmindb
 ```
 
-The first `garmindb_cli.py` run fails with `Missing or bad config` until the config file exists. Create it and add your Garmin Connect login:
+The first `garmindb_cli.py` run fails with `Missing or bad config` until the config file exists. Create it:
 
 ```bash
 mkdir -p ~/.GarminDb
 cp ~/garmindb-venv/lib/python3.12/site-packages/garmindb/GarminConnectConfig.json.example ~/.GarminDb/GarminConnectConfig.json
-# Edit it: set credentials.user and credentials.password to your Garmin login
 open ~/.GarminDb/GarminConnectConfig.json
 ```
+
+Edit the `credentials` section — replace the placeholders with your Garmin Connect email and password:
+
+```json
+"credentials": {
+    "user": "your.email@example.com",
+    "secure_password": false,
+    "password": "your-garmin-password",
+    "password_file": null
+},
+```
+
+Everything else can stay as is. The downloaded data lands under `~/HealthData` by default (configurable via `directories.base_dir` further down in the same file).
 
 Then download and import your activities:
 
 ```bash
 ~/garmindb-venv/bin/garmindb_cli.py --download --import --activities
 ```
-
-This downloads your activity history into SQLite databases and FIT files. By default they land under `~/HealthData` (see `directories.base_dir` in the GarminConnectConfig.json).
 
 ### 2. Configure this app
 
