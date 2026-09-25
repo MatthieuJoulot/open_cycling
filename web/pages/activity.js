@@ -181,6 +181,7 @@ function renderClimbsTable(activityId, climbs, records) {
       <td>${vam ? Math.round(vam) + ' m/h' : '-'}</td>
     `;
     if (c.validated_climb_id) {
+      row.dataset.validatedName = c.validated_name;
       const cell = row.querySelector('.climb-name-cell');
       const link = cell.querySelector('.climb-name-link');
       link.textContent = c.validated_name;
@@ -360,6 +361,8 @@ function updateClimbNameCells(names) {
   if (!tbody) return;
   for (const row of tbody.querySelectorAll('tr')) {
     if (row.querySelector('.climb-name-input')) continue;
+    // Validated names win over OSM/manual suggestions; never overwrite them.
+    if (row.dataset.validatedName) continue;
     const key = row.dataset.climbKey;
     const entry = names[key];
     const link = row.querySelector('.climb-name-link');
