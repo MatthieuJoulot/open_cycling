@@ -244,6 +244,24 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(json.dumps(get_config_status()))
             return
 
+        if path == "/api/import-files":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8")
+            try:
+                payload = json.loads(body)
+            except Exception as exc:
+                self.send_error(400, f"Invalid JSON: {exc}")
+                return
+            if not isinstance(payload, dict):
+                self.send_error(400, "Expected a JSON object")
+                return
+            result = import_files(payload)
+            if "error" in result:
+                self.send_error(400, result["error"])
+                return
+            self._send_json(json.dumps(result))
+            return
+
         if path.startswith("/api/activity/") and path.endswith("/delete"):
             activity_id = path.split("/")[-2]
             if not activity_id.isdigit():
@@ -770,6 +788,60 @@ def get_activity_records(activity_id, fields_param, limit_param):
         result.append(point)
 
     return result
+
+
+IMPORTABLE_FILES = {
+    "cols": ("cols.json", list),
+    "segments": ("climb_segments.json", dict),
+    "names": ("climb_names.json", dict),
+    "validated": ("validated_climbs.json", dict),
+}
+
+
+def import_files(payload):
+    """Copy user data files (cols, segments, names, validated climbs) from
+    another install into this one. Only files given in the payload are
+    imported; existing files here are overwritten after validation."""
+    results = {}
+    imported_any = False
+    for key, (filename, expected_type) in IMPORTABLE_FILES.items():
+        source = payload.get(key)
+        if not source:
+            continue
+        src_path = Path(source).expanduser()
+        if not src_path.is_absolute():
+            return {"error": f"{key}: path must be absolute"}
+        if not src_path.exists():
+            return {"error": f"{key}: file not found ({src_path})"}
+        try:
+            data = json.loads(src_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {"error": f"{key}: not valid JSON ({exc})"}
+        if expected_type is list and not isinstance(data, list):
+            return {"error": f"{key}: expected a JSON list"}
+        if expected_type is dict and not isinstance(data, dict):
+            return {"error": f"{key}: expected a JSON object"}
+        dest = Path(__file__).parent / filename
+        dest.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        if isinstance(data, list):
+            count = len(data)
+        elif isinstance(data, dict):
+            count = len(data)
+        else:
+            count = 0
+        results[key] = {"from": str(src_path), "entries": count}
+        imported_any = True
+    if not imported_any:
+        return {"error": "no files given"}
+    # Segment overrides and validated names apply immediately; groups may
+    # change, rebuild them so the UI is consistent.
+    try:
+        groups, mapping = climb_groups.build_groups(get_climbs_with_overrides())
+        climb_groups.save_groups(groups, mapping)
+        results["groups"] = len(groups)
+    except Exception as exc:
+        results["groups_warning"] = str(exc)
+    return {"imported": results}
 
 
 def get_config_status():

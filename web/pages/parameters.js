@@ -1,4 +1,4 @@
-import { fetchConfig, saveConfig } from '../utils/api.js';
+import { fetchConfig, saveConfig, importFiles } from '../utils/api.js';
 
 export async function renderParameters() {
   const app = document.getElementById('app');
@@ -60,6 +60,38 @@ export async function renderParameters() {
         </div>
       </div>
 
+      <div class="card mb-3">
+        <div class="card-header fw-semibold">Import user data</div>
+        <div class="card-body">
+          <p class="small text-muted mb-2">
+            Copy a curated cols list, your segment edits, climb names, or validated climbs from another installation.
+            Give the path of the source file (e.g. <code>/path/to/other/install/cols.json</code>); it is copied here, the source is untouched.
+          </p>
+          <form id="import-form">
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label class="form-label small">Cols list (cols.json)</label>
+                <input class="form-control form-control-sm text-muted" id="imp-cols" placeholder="/path/to/cols.json">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small">Segment edits (climb_segments.json)</label>
+                <input class="form-control form-control-sm text-muted" id="imp-segments" placeholder="/path/to/climb_segments.json">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small">Climb names (climb_names.json)</label>
+                <input class="form-control form-control-sm text-muted" id="imp-names" placeholder="/path/to/climb_names.json">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small">Validated climbs (validated_climbs.json)</label>
+                <input class="form-control form-control-sm text-muted" id="imp-validated" placeholder="/path/to/validated_climbs.json">
+              </div>
+            </div>
+            <button type="submit" class="btn btn-sm btn-outline-primary mt-3" id="import-btn">Import</button>
+            <span id="import-result" class="small ms-2"></span>
+          </form>
+        </div>
+      </div>
+
       <p class="small text-muted">Server port is configured in <code id="config-port-hint"></code>; changing it requires a server restart.</p>
     </div>
   `;
@@ -92,6 +124,38 @@ export async function renderParameters() {
     } finally {
       btn.disabled = false;
       btn.textContent = 'Save configuration';
+    }
+  });
+  document.getElementById('import-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('import-btn');
+    const result = document.getElementById('import-result');
+    const payload = {};
+    for (const [key, id] of [['cols', 'imp-cols'], ['segments', 'imp-segments'], ['names', 'imp-names'], ['validated', 'imp-validated']]) {
+      const v = document.getElementById(id).value.trim();
+      if (v) payload[key] = v;
+    }
+    if (Object.keys(payload).length === 0) {
+      result.textContent = 'Nothing to import — fill at least one path.';
+      result.className = 'small ms-2 text-warning';
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Importing…';
+    result.textContent = '';
+    try {
+      const res = await importFiles(payload);
+      const parts = Object.entries(res.imported || {})
+        .filter(([k]) => k !== 'groups' && !k.endsWith('_warning'))
+        .map(([k, v]) => `${k}: ${v.entries} entries`);
+      result.textContent = 'Imported — ' + parts.join(', ') + '. Reload pages to see the changes.';
+      result.className = 'small ms-2 text-success';
+    } catch (err) {
+      result.textContent = err.message || 'Import failed';
+      result.className = 'small ms-2 text-danger';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Import';
     }
   });
 }

@@ -164,3 +164,20 @@ export async function saveConfig(payload) {
   }
   return res.json();
 }
+
+export async function importFiles(payload) {
+  const res = await fetch(`${BASE}/api/import-files`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    let detail = 'Import failed';
+    try {
+      const body = await res.json();
+      if (body && (body.error || body.message)) detail = body.error || body.message;
+    } catch (e) { /* ignore */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
