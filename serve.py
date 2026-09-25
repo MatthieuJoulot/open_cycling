@@ -780,9 +780,9 @@ def get_config_status():
         "config_file": str(config.CONFIG_JSON),
         "config_file_exists": config.CONFIG_JSON.exists(),
         "paths": {
-            "activities_db_exists": (config.ACTIVITIES_DB or Path()).exists(),
-            "garmin_db_exists": (config.GARMIN_DB or Path()).exists(),
-            "fit_dir_exists": (config.FIT_DIR or Path()).exists(),
+            "activities_db_exists": bool(config.ACTIVITIES_DB and config.ACTIVITIES_DB.exists()),
+            "garmin_db_exists": bool(config.GARMIN_DB and config.GARMIN_DB.exists()),
+            "fit_dir_exists": bool(config.FIT_DIR and config.FIT_DIR.is_dir()),
             "garmindb_cli_exists": bool(config.GARMINDB_CLI and config.GARMINDB_CLI.exists()),
         },
     }
