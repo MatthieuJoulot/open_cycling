@@ -30,11 +30,24 @@ cd open_cycling
 ```bash
 python3 -m venv ~/garmindb-venv
 ~/garmindb-venv/bin/pip install garmindb
-# Authenticate with Garmin Connect (interactive, one time):
+```
+
+The first `garmindb_cli.py` run fails with `Missing or bad config` until the config file exists. Create it and add your Garmin Connect login:
+
+```bash
+mkdir -p ~/.GarminDb
+cp ~/garmindb-venv/lib/python3.12/site-packages/garmindb/GarminConnectConfig.json.example ~/.GarminDb/GarminConnectConfig.json
+# Edit it: set credentials.user and credentials.password to your Garmin login
+open ~/.GarminDb/GarminConnectConfig.json
+```
+
+Then download and import your activities:
+
+```bash
 ~/garmindb-venv/bin/garmindb_cli.py --download --import --activities
 ```
 
-The first `garmindb_cli.py` run creates `~/.GarminDb/garminconnect.conf` — open it and add your Garmin username/password, then re-run. This first run also downloads your whole activity history into SQLite databases (location configurable in GarminDB's `~/.GarminDb/HealthData` config).
+This downloads your activity history into SQLite databases and FIT files. By default they land under `~/HealthData` (see `directories.base_dir` in the GarminConnectConfig.json).
 
 ### 2. Configure this app
 
