@@ -15,27 +15,27 @@ export async function renderParameters() {
           <form id="config-form">
             <div class="mb-3">
               <label class="form-label" for="cfg-activities_db">Activities database (SQLite)</label>
-              <input class="form-control form-control-sm" id="cfg-activities_db" placeholder="~/llm/bike/HealthData/DBs/garmin_activities.db">
+              <input class="form-control form-control-sm text-muted" id="cfg-activities_db" placeholder="/path/to/garmin_activities.db">
               <div class="form-text path-status" data-path="activities_db_exists"></div>
             </div>
             <div class="mb-3">
               <label class="form-label" for="cfg-garmin_db">Garmin database (SQLite)</label>
-              <input class="form-control form-control-sm" id="cfg-garmin_db" placeholder="~/llm/bike/HealthData/DBs/garmin.db">
+              <input class="form-control form-control-sm text-muted" id="cfg-garmin_db" placeholder="/path/to/garmin.db">
               <div class="form-text path-status" data-path="garmin_db_exists"></div>
             </div>
             <div class="mb-3">
               <label class="form-label" for="cfg-fit_dir">FIT files directory</label>
-              <input class="form-control form-control-sm" id="cfg-fit_dir" placeholder="~/llm/bike/HealthData/FitFiles/Activities">
+              <input class="form-control form-control-sm text-muted" id="cfg-fit_dir" placeholder="/path/to/FitFiles/Activities">
               <div class="form-text path-status" data-path="fit_dir_exists"></div>
             </div>
             <div class="mb-3">
               <label class="form-label" for="cfg-personal_info_json">Personal info JSON</label>
-              <input class="form-control form-control-sm" id="cfg-personal_info_json" placeholder="~/llm/bike/HealthData/FitFiles/personal-information.json">
+              <input class="form-control form-control-sm text-muted" id="cfg-personal_info_json" placeholder="/path/to/personal-information.json">
               <div class="form-text"></div>
             </div>
             <div class="mb-3">
               <label class="form-label" for="cfg-garmindb_cli">GarminDB CLI (optional)</label>
-              <input class="form-control form-control-sm" id="cfg-garmindb_cli" placeholder="~/garmindb-venv/bin/garmindb_cli.py">
+              <input class="form-control form-control-sm text-muted" id="cfg-garmindb_cli" placeholder="/path/to/garmindb_cli.py">
               <div class="form-text path-status" data-path="garmindb_cli_exists"></div>
             </div>
             <div class="form-check form-switch mb-3">
