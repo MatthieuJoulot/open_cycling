@@ -52,15 +52,15 @@ Alternatively, create the file by hand:
 cp config.example.json config.json
 ```
 
-Edit `config.json` so the paths point to your GarminDB data and the garmindb CLI:
+Edit `config.json` so the paths point to your GarminDB data and the garmindb CLI, e.g.:
 
 ```json
 {
-  "activities_db": "~/llm/bike/HealthData/DBs/garmin_activities.db",
-  "garmin_db": "~/llm/bike/HealthData/DBs/garmin.db",
-  "fit_dir": "~/llm/bike/HealthData/FitFiles/Activities",
-  "personal_info_json": "~/llm/bike/HealthData/FitFiles/personal-information.json",
-  "garmindb_cli": "~/garmindb-venv/bin/garmindb_cli.py",
+  "activities_db": "/path/to/HealthData/DBs/garmin_activities.db",
+  "garmin_db": "/path/to/HealthData/DBs/garmin.db",
+  "fit_dir": "/path/to/HealthData/FitFiles/Activities",
+  "personal_info_json": "/path/to/HealthData/FitFiles/personal-information.json",
+  "garmindb_cli": "/path/to/garmindb-venv/bin/garmindb_cli.py",
   "port": 8080,
   "sync_latest": true
 }
