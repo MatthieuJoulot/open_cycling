@@ -53,6 +53,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/validated-climbs":
             self._send_json(json.dumps(validated_store.get_validated_list()))
             return
+        if path == "/api/config":
+            self._send_json(json.dumps(get_config_status()))
+            return
         if path == "/api/regions":
             self._send_json(json.dumps(get_regions()))
             return
@@ -211,6 +214,25 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_error(404, "Validated climb not found")
                 return
             self._send_json(json.dumps({"deleted": True}))
+            return
+
+        if path == "/api/config":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8")
+            try:
+                payload = json.loads(body)
+            except Exception as exc:
+                self.send_error(400, f"Invalid JSON: {exc}")
+                return
+            if not isinstance(payload, dict):
+                self.send_error(400, "Expected a JSON object")
+                return
+            try:
+                config.save_config(payload)
+            except Exception as exc:
+                self.send_error(400, f"Could not save config: {exc}")
+                return
+            self._send_json(json.dumps(get_config_status()))
             return
 
         if path.startswith("/api/activity/") and path.endswith("/delete"):
@@ -734,6 +756,22 @@ def get_activity_records(activity_id, fields_param, limit_param):
         result.append(point)
 
     return result
+
+
+def get_config_status():
+    """Current config for the parameters page, plus data availability checks."""
+    values = config.current_config()
+    return {
+        "values": values,
+        "config_file": str(config.CONFIG_JSON),
+        "config_file_exists": config.CONFIG_JSON.exists(),
+        "paths": {
+            "activities_db_exists": (config.ACTIVITIES_DB or Path()).exists(),
+            "garmin_db_exists": (config.GARMIN_DB or Path()).exists(),
+            "fit_dir_exists": (config.FIT_DIR or Path()).exists(),
+            "garmindb_cli_exists": bool(config.GARMINDB_CLI and config.GARMINDB_CLI.exists()),
+        },
+    }
 
 
 def get_profile():

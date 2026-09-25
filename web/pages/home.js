@@ -45,9 +45,12 @@ export async function renderHome() {
     </div>
   `;
 
+  const climbsData = await fetchClimbs();
+  allActivities = climbsData.activities || [];
+
   if (allActivities.length === 0) {
-    const data = await fetchClimbs();
-    allActivities = data.activities || [];
+    renderSetupCard();
+    return;
   }
 
   updateList();
@@ -57,6 +60,24 @@ export async function renderHome() {
   document.getElementById('date-to').addEventListener('change', () => updateList());
   document.getElementById('sort').addEventListener('change', () => updateList());
   document.getElementById('has-climbs-only').addEventListener('change', () => updateList());
+}
+
+function renderSetupCard() {
+  const feed = document.getElementById('activity-feed');
+  feed.innerHTML = '';
+  const card = document.createElement('div');
+  card.className = 'card text-center mx-auto mt-5';
+  card.style.maxWidth = '480px';
+  card.innerHTML = `
+    <div class="card-body p-4">
+      <h5 class="card-title mb-2">No rides yet</h5>
+      <p class="card-text text-muted">
+        Point the app at your GarminDB data, or sync new activities if it is already configured.
+      </p>
+      <a href="#parameters" class="btn btn-primary">Configure</a>
+    </div>
+  `;
+  feed.appendChild(card);
 }
 
 function updateList() {

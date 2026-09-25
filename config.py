@@ -52,3 +52,30 @@ PERSONAL_INFO_JSON = _expand(_cfg["personal_info_json"])
 GARMINDB_CLI = Path(_cfg["garmindb_cli"]).expanduser() if _cfg["garmindb_cli"] else None
 PORT = int(_cfg["port"])
 SYNC_LATEST = bool(_cfg["sync_latest"])
+
+
+def current_config():
+    """Config values as shown in the UI (raw strings, unexpanded)."""
+    return {key: _cfg[key] for key in DEFAULTS}
+
+
+def save_config(values):
+    """Write a subset of config keys to config.json and reload."""
+    allowed = set(DEFAULTS) - {"port"}  # port changes need a server restart
+    updates = {k: v for k, v in values.items() if k in allowed}
+    existing = {}
+    if CONFIG_JSON.exists():
+        try:
+            existing = json.loads(CONFIG_JSON.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+    existing.update(updates)
+    CONFIG_JSON.write_text(json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    global _cfg, ACTIVITIES_DB, GARMIN_DB, FIT_DIR, PERSONAL_INFO_JSON, GARMINDB_CLI, SYNC_LATEST
+    _cfg = _load()
+    ACTIVITIES_DB = _expand(_cfg["activities_db"])
+    GARMIN_DB = _expand(_cfg["garmin_db"])
+    FIT_DIR = _expand(_cfg["fit_dir"])
+    PERSONAL_INFO_JSON = _expand(_cfg["personal_info_json"])
+    GARMINDB_CLI = Path(_cfg["garmindb_cli"]).expanduser() if _cfg["garmindb_cli"] else None
+    SYNC_LATEST = bool(_cfg["sync_latest"])

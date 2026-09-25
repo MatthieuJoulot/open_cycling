@@ -18,8 +18,10 @@ A local web app to detect, name, edit, and review cycling climbs from Garmin act
 
 ## Installation
 
+The repository is private; clone it with the GitHub CLI (or another authenticated method):
+
 ```bash
-git clone git@github.com:MatthieuJoulot/open_cycling.git
+gh repo clone MatthieuJoulot/open_cycling
 cd open_cycling
 ```
 
@@ -36,6 +38,16 @@ The first `garmindb_cli.py` run creates `~/.GarminDb/garminconnect.conf` — ope
 
 ### 2. Configure this app
 
+Start the server and configure from the UI — no file editing needed:
+
+```bash
+python3 serve.py
+```
+
+Open `http://127.0.0.1:8080`. With no rides found, the feed shows a **Configure** button that leads to the Parameters page: fill in the paths to your GarminDB data (the fields are pre-filled with sensible defaults and show whether each path exists), then save and restart the server.
+
+Alternatively, create the file by hand:
+
 ```bash
 cp config.example.json config.json
 ```
@@ -49,11 +61,12 @@ Edit `config.json` so the paths point to your GarminDB data and the garmindb CLI
   "fit_dir": "~/llm/bike/HealthData/FitFiles/Activities",
   "personal_info_json": "~/llm/bike/HealthData/FitFiles/personal-information.json",
   "garmindb_cli": "~/garmindb-venv/bin/garmindb_cli.py",
-  "port": 8080
+  "port": 8080,
+  "sync_latest": true
 }
 ```
 
-Paths may start with `~`. Each value can also be overridden with environment variables (`CLIMB_ANALYZER_ACTIVITIES_DB`, `CLIMB_ANALYZER_GARMINDB_CLI`, …).
+Paths may start with `~`. Each value can also be overridden with environment variables (`CLIMB_ANALYZER_ACTIVITIES_DB`, `CLIMB_ANALYZER_GARMINDB_CLI`, …). Changes to the port require a server restart; other values are picked up on save.
 
 ### 3. Run
 

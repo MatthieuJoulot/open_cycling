@@ -141,3 +141,26 @@ export async function deleteActivity(id) {
   if (!res.ok) throw new Error('Failed to delete activity');
   return res.json();
 }
+
+export async function fetchConfig() {
+  const res = await fetch(`${BASE}/api/config`);
+  if (!res.ok) throw new Error('Failed to load configuration');
+  return res.json();
+}
+
+export async function saveConfig(payload) {
+  const res = await fetch(`${BASE}/api/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    let detail = 'Failed to save configuration';
+    try {
+      const body = await res.json();
+      if (body && (body.error || body.message)) detail = body.error || body.message;
+    } catch (e) { /* ignore */ }
+    throw new Error(detail);
+  }
+  return res.json();
+}
