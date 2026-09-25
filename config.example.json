@@ -1,8 +1,5 @@
 {
-  "activities_db": "",
-  "garmin_db": "",
-  "fit_dir": "",
-  "personal_info_json": "",
+  "health_data_dir": "",
   "garmindb_cli": "",
   "port": 8080,
   "sync_latest": true

@@ -14,24 +14,9 @@ export async function renderParameters() {
           </p>
           <form id="config-form">
             <div class="mb-3">
-              <label class="form-label" for="cfg-activities_db">Activities database (SQLite)</label>
-              <input class="form-control form-control-sm text-muted" id="cfg-activities_db" placeholder="/path/to/garmin_activities.db">
-              <div class="form-text path-status" data-path="activities_db_exists"></div>
-            </div>
-            <div class="mb-3">
-              <label class="form-label" for="cfg-garmin_db">Garmin database (SQLite)</label>
-              <input class="form-control form-control-sm text-muted" id="cfg-garmin_db" placeholder="/path/to/garmin.db">
-              <div class="form-text path-status" data-path="garmin_db_exists"></div>
-            </div>
-            <div class="mb-3">
-              <label class="form-label" for="cfg-fit_dir">FIT files directory</label>
-              <input class="form-control form-control-sm text-muted" id="cfg-fit_dir" placeholder="/path/to/FitFiles/Activities">
-              <div class="form-text path-status" data-path="fit_dir_exists"></div>
-            </div>
-            <div class="mb-3">
-              <label class="form-label" for="cfg-personal_info_json">Personal info JSON</label>
-              <input class="form-control form-control-sm text-muted" id="cfg-personal_info_json" placeholder="/path/to/personal-information.json">
-              <div class="form-text"></div>
+              <label class="form-label" for="cfg-health_data_dir">HealthData directory (GarminDB data)</label>
+              <input class="form-control form-control-sm text-muted" id="cfg-health_data_dir" placeholder="/path/to/HealthData">
+              <div class="form-text">The database and file paths are derived from it (DBs/ and FitFiles/ inside).</div>
             </div>
             <div class="mb-3">
               <label class="form-label" for="cfg-garmindb_cli">GarminDB CLI (optional)</label>
@@ -42,8 +27,35 @@ export async function renderParameters() {
               <input class="form-check-input" type="checkbox" id="cfg-sync_latest">
               <label class="form-check-label" for="cfg-sync_latest">Fast sync (only fetch the latest activities; untick to walk the whole history)</label>
             </div>
-            <button type="submit" class="btn btn-primary btn-sm" id="config-save-btn">Save configuration</button>
-            <span id="config-saved-msg" class="text-success small ms-2 d-none">Saved ✓ — restart the server if you changed paths or the CLI.</span>
+
+            <a class="small text-decoration-none" data-bs-toggle="collapse" href="#advanced-paths" role="button">Advanced paths</a>
+            <div class="collapse mt-2" id="advanced-paths">
+              <p class="small text-muted mb-2">Set these only if your layout differs from the standard GarminDB structure.</p>
+              <div class="mb-3">
+                <label class="form-label small" for="cfg-activities_db">Activities database (SQLite)</label>
+                <input class="form-control form-control-sm text-muted" id="cfg-activities_db" placeholder="derived from HealthData directory">
+                <div class="form-text path-status" data-path="activities_db_exists"></div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label small" for="cfg-garmin_db">Garmin database (SQLite)</label>
+                <input class="form-control form-control-sm text-muted" id="cfg-garmin_db" placeholder="derived from HealthData directory">
+                <div class="form-text path-status" data-path="garmin_db_exists"></div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label small" for="cfg-fit_dir">FIT files directory</label>
+                <input class="form-control form-control-sm text-muted" id="cfg-fit_dir" placeholder="derived from HealthData directory">
+                <div class="form-text path-status" data-path="fit_dir_exists"></div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label small" for="cfg-personal_info_json">Personal info JSON</label>
+                <input class="form-control form-control-sm text-muted" id="cfg-personal_info_json" placeholder="derived from HealthData directory">
+              </div>
+            </div>
+
+            <div class="mt-3">
+              <button type="submit" class="btn btn-primary btn-sm" id="config-save-btn">Save configuration</button>
+              <span id="config-saved-msg" class="text-success small ms-2 d-none">Saved ✓ — restart the server if you changed paths or the CLI.</span>
+            </div>
           </form>
         </div>
       </div>
@@ -53,24 +65,10 @@ export async function renderParameters() {
   `;
 
   const status = await fetchConfig();
-  const values = status.values || {};
+  fillForm(status);
 
   document.getElementById('config-file-path').textContent = status.config_file || 'config.json';
   document.getElementById('config-port-hint').textContent = status.config_file || 'config.json';
-
-  const fields = ['activities_db', 'garmin_db', 'fit_dir', 'personal_info_json', 'garmindb_cli'];
-  for (const f of fields) {
-    document.getElementById('cfg-' + f).value = values[f] || '';
-  }
-  document.getElementById('cfg-sync_latest').checked = values.sync_latest !== false;
-
-  for (const el of document.querySelectorAll('.path-status')) {
-    const key = el.dataset.path;
-    if (key in (status.paths || {})) {
-      el.textContent = status.paths[key] ? '✓ found' : '⚠ not found';
-      el.classList.add(status.paths[key] ? 'text-success' : 'text-warning');
-    }
-  }
 
   document.getElementById('config-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -78,14 +76,17 @@ export async function renderParameters() {
     btn.disabled = true;
     btn.textContent = 'Saving…';
     try {
-      const payload = {};
-      for (const f of fields) {
+      const payload = {
+        health_data_dir: document.getElementById('cfg-health_data_dir').value.trim(),
+        garmindb_cli: document.getElementById('cfg-garmindb_cli').value.trim(),
+        sync_latest: document.getElementById('cfg-sync_latest').checked,
+      };
+      for (const f of ['activities_db', 'garmin_db', 'fit_dir', 'personal_info_json']) {
         payload[f] = document.getElementById('cfg-' + f).value.trim();
       }
-      payload.sync_latest = document.getElementById('cfg-sync_latest').checked;
       const updated = await saveConfig(payload);
       document.getElementById('config-saved-msg').classList.remove('d-none');
-      applyPathStatus(updated);
+      fillForm(updated);
     } catch (err) {
       alert(err.message || 'Could not save configuration');
     } finally {
@@ -93,6 +94,17 @@ export async function renderParameters() {
       btn.textContent = 'Save configuration';
     }
   });
+}
+
+function fillForm(status) {
+  const values = status.values || {};
+  document.getElementById('cfg-health_data_dir').value = values.health_data_dir || '';
+  document.getElementById('cfg-garmindb_cli').value = values.garmindb_cli || '';
+  document.getElementById('cfg-sync_latest').checked = values.sync_latest !== false;
+  for (const f of ['activities_db', 'garmin_db', 'fit_dir', 'personal_info_json']) {
+    document.getElementById('cfg-' + f).value = values[f] || '';
+  }
+  applyPathStatus(status);
 }
 
 function applyPathStatus(status) {

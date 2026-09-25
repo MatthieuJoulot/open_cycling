@@ -51,7 +51,7 @@ Edit the `credentials` section — replace the placeholders with your Garmin Con
 },
 ```
 
-Everything else can stay as is. The downloaded data lands under `~/HealthData` by default (configurable via `directories.base_dir` further down in the same file).
+Everything else can stay as is. The downloaded data lands under `~/HealthData` by default — change `directories.base_dir` in the same file if you want it elsewhere (e.g. `"llm/bike/HealthData"` puts it at `~/llm/bike/HealthData`).
 
 Then download and import your activities:
 
@@ -67,7 +67,7 @@ Start the server and configure from the UI — no file editing needed:
 python3 serve.py
 ```
 
-Open `http://127.0.0.1:8080`. With no rides found, the feed shows a **Configure** button that leads to the Parameters page: fill in the paths to your GarminDB data (the fields are pre-filled with sensible defaults and show whether each path exists), then save and restart the server.
+Open `http://127.0.0.1:8080`. With no rides found, the feed shows a **Configure** button that leads to the Parameters page. The only path you normally need is the **HealthData directory** from step 1 (`~/HealthData` by default): the database and FIT file paths are derived from it, and the page shows whether each path exists. Save, then restart the server.
 
 Alternatively, create the file by hand:
 
@@ -75,21 +75,27 @@ Alternatively, create the file by hand:
 cp config.example.json config.json
 ```
 
-Edit `config.json` so the paths point to your GarminDB data and the garmindb CLI, e.g.:
+Edit `config.json` so `health_data_dir` points at your GarminDB data directory, and `garmindb_cli` at the CLI from step 1:
 
 ```json
 {
-  "activities_db": "/path/to/HealthData/DBs/garmin_activities.db",
-  "garmin_db": "/path/to/HealthData/DBs/garmin.db",
-  "fit_dir": "/path/to/HealthData/FitFiles/Activities",
-  "personal_info_json": "/path/to/HealthData/FitFiles/personal-information.json",
-  "garmindb_cli": "/path/to/garmindb-venv/bin/garmindb_cli.py",
+  "health_data_dir": "~/HealthData",
+  "garmindb_cli": "~/garmindb-venv/bin/garmindb_cli.py",
   "port": 8080,
   "sync_latest": true
 }
 ```
 
-Paths may start with `~`. Each value can also be overridden with environment variables (`CLIMB_ANALYZER_ACTIVITIES_DB`, `CLIMB_ANALYZER_GARMINDB_CLI`, …). Changes to the port require a server restart; other values are picked up on save.
+The databases and files are expected at the standard GarminDB layout inside that directory:
+
+- `DBs/garmin_activities.db` — activity summaries and records
+- `DBs/garmin.db` — devices, monitoring
+- `FitFiles/Activities` — downloaded FIT files
+- `FitFiles/personal-information.json` — athlete profile
+
+If your layout differs, the individual paths (`activities_db`, `garmin_db`, `fit_dir`, `personal_info_json`) override the derived ones; they are also editable under "Advanced paths" on the Parameters page.
+
+Paths may start with `~`. Each value can also be overridden with environment variables (`CLIMB_ANALYZER_HEALTH_DATA_DIR`, `CLIMB_ANALYZER_GARMINDB_CLI`, …). Changes to the port require a server restart; other values are picked up on save.
 
 ### 3. Run
 
