@@ -358,6 +358,9 @@ def _time_to_seconds(value):
 
 
 def main(full=False):
+    if not DB_PATH or not DB_PATH.exists():
+        print(f"No activities database found ({DB_PATH}); nothing to analyze.")
+        return
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()

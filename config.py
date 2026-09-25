@@ -7,10 +7,10 @@ ROOT = Path(__file__).parent
 CONFIG_JSON = ROOT / "config.json"
 
 DEFAULTS = {
-    "activities_db": "~/llm/bike/HealthData/DBs/garmin_activities.db",
-    "garmin_db": "~/llm/bike/HealthData/DBs/garmin.db",
-    "fit_dir": "~/llm/bike/HealthData/FitFiles/Activities",
-    "personal_info_json": "~/llm/bike/HealthData/FitFiles/personal-information.json",
+    "activities_db": "",
+    "garmin_db": "",
+    "fit_dir": "",
+    "personal_info_json": "",
     "garmindb_cli": "",
     "port": 8080,
     "sync_latest": True,

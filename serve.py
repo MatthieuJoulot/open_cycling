@@ -26,6 +26,15 @@ CLIMBS_JSON = Path(__file__).parent / "climbs.json"
 DB_PATH = config.ACTIVITIES_DB
 
 
+def _connect_db():
+    """Open the activities DB; returns None when the app is not configured."""
+    if not DB_PATH or not DB_PATH.exists():
+        return None
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
@@ -279,8 +288,9 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def get_track(activity_id):
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    conn = _connect_db()
+    if conn is None:
+        return []
     cur = conn.cursor()
     rows = cur.execute(
         """
@@ -351,8 +361,9 @@ def _get_candidate_segments(activity_id):
 
 
 def get_polyline(activity_id, max_points=60):
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    conn = _connect_db()
+    if conn is None:
+        return []
     cur = conn.cursor()
     rows = cur.execute(
         """
@@ -495,8 +506,9 @@ def _parse_timestamp(value):
 
 
 def _compute_climb_performance(activity_id, start_m, end_m):
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    conn = _connect_db()
+    if conn is None:
+        return {}
     cur = conn.cursor()
 
     # Detect available columns to avoid errors on older DB schemas.
@@ -596,8 +608,9 @@ def _load_personal_info():
 
 
 def get_activity_details(activity_id):
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    conn = _connect_db()
+    if conn is None:
+        return {"error": "not configured: set the activities database in Parameters"}
     cur = conn.cursor()
 
     activity = cur.execute(
@@ -704,8 +717,9 @@ def get_activity_details(activity_id):
 
 
 def get_activity_records(activity_id, fields_param, limit_param):
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    conn = _connect_db()
+    if conn is None:
+        return []
     cur = conn.cursor()
 
     available = {
@@ -775,8 +789,14 @@ def get_config_status():
 
 
 def get_profile():
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    conn = _connect_db()
+    if conn is None:
+        return {
+            "athlete": {}, "devices": [],
+            "all_time": {"rides": 0, "distance_km": 0, "moving_time_s": 0, "ascent_m": 0, "descent_m": 0, "climbs": 0},
+            "ytd": {"rides": 0, "distance_km": 0, "ascent_m": 0},
+            "last_30_days": {"rides": 0, "distance_km": 0, "ascent_m": 0},
+        }
     cur = conn.cursor()
 
     # All-time cycling totals
