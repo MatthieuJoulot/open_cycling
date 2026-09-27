@@ -42,7 +42,7 @@ export async function renderActivity(activityId) {
             <div id="climbs-loading" class="small text-muted mb-2 d-none">Looking up names from OpenStreetMap…</div>
             <div class="table-responsive">
               <table class="table table-sm table-striped">
-                <thead><tr><th>#</th><th>Name</th><th>Category</th><th>Start (km)</th><th>Length (km)</th><th>Elev. gain</th><th>Avg grade</th><th>Max grade</th><th>VAM</th></tr></thead>
+                <thead><tr><th>#</th><th>Name</th><th>Category</th><th>Start (km)</th><th>Length (km)</th><th>Elev. gain</th><th>Avg grade</th><th>Max grade</th><th>VAM</th><th>Δ PR</th></tr></thead>
                 <tbody id="climbs-body"></tbody>
               </table>
             </div>
@@ -187,6 +187,7 @@ function renderClimbsTable(activityId, climbs, records) {
       <td>${fmtGrade(c.avg_grade_percent)}</td>
       <td>${fmtGrade(c.max_grade_percent)}</td>
       <td>${vam ? Math.round(vam) + ' m/h' : '-'}</td>
+      <td class="climb-pr-cell">…</td>
     `;
     if (c.validated_climb_id) {
       row.dataset.validatedName = c.validated_name;
@@ -204,6 +205,7 @@ function renderClimbsTable(activityId, climbs, records) {
   tbody.addEventListener('click', e => handleClimbModifyClick(e, records));
   tbody.addEventListener('click', handleClimbValidateClick);
   tbody.addEventListener('click', e => handleClimbAnalysisClick(e, records));
+  renderClimbPrDeltas(activityId, climbs, records);
 }
 
 async function handleClimbModifyClick(e, records) {
@@ -514,6 +516,55 @@ function computeVam(climb, records) {
   const seconds = (new Date(end.timestamp) - new Date(start.timestamp)) / 1000;
   if (seconds <= 0) return null;
   return (climb.elevation_gain_m / seconds) * 3600;
+}
+
+function computeElapsed(climb, records) {
+  const start = records.find(p => p.distance >= climb.start_distance_m && p.timestamp);
+  const end = [...records].reverse().find(p => p.distance <= climb.end_distance_m && p.timestamp);
+  if (!start || !end || !start.timestamp || !end.timestamp) return null;
+  const seconds = (new Date(end.timestamp) - new Date(start.timestamp)) / 1000;
+  return seconds > 0 ? seconds : null;
+}
+
+// PR delta per climb row: elapsed time vs the best attempt of the same
+// climb group. One matches fetch per climb (small, cached server-side).
+async function renderClimbPrDeltas(activityId, climbs, records) {
+  const tbody = document.getElementById('climbs-body');
+  const results = await Promise.all(climbs.map(async c => {
+    const key = climbKey(activityId, c.start_distance_m, c.end_distance_m);
+    let best = null;
+    try {
+      const m = await fetchClimbMatches(key);
+      const times = (m.members || [])
+        .filter(x => x.elapsed_time_s != null)
+        .map(x => x.elapsed_time_s);
+      if (times.length) best = Math.min(...times);
+    } catch (err) { /* leave cell as '-' */ }
+    return { key, best };
+  }));
+  const bestByKey = {};
+  for (const r of results) bestByKey[r.key] = r.best;
+
+  const fmtDelta = secs => {
+    if (secs >= 3600) return `${Math.floor(secs / 3600)}h ${String(Math.floor(secs % 3600 / 60)).padStart(2, '0')}m ${String(Math.floor(secs % 60)).padStart(2, '0')}s`;
+    if (secs >= 60) return `${Math.floor(secs / 60)}m ${String(Math.floor(secs % 60)).padStart(2, '0')}s`;
+    return `${Math.round(secs)}s`;
+  };
+
+  for (const row of tbody.querySelectorAll('tr')) {
+    const cell = row.querySelector('.climb-pr-cell');
+    if (!cell) continue;
+    const key = row.dataset.climbKey;
+    const c = climbs.find(x => climbKey(activityId, x.start_distance_m, x.end_distance_m) === key);
+    if (!c) continue;
+    const elapsed = computeElapsed(c, records);
+    const best = bestByKey[key];
+    if (elapsed == null || best == null) continue;
+    const d = elapsed - best;
+    if (d > 0) cell.innerHTML = `<span class="text-danger">+${fmtDelta(d)}</span>`;
+    else if (d === 0) cell.innerHTML = `<span class="text-success fw-bold">PR</span>`;
+    else cell.innerHTML = `<span class="text-success">-${fmtDelta(-d)}</span>`;
+  }
 }
 
 function renderLapsTable(laps) {

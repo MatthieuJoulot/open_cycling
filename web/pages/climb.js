@@ -88,7 +88,7 @@ export async function renderClimb(key) {
       <div class="table-responsive">
         <table class="table table-sm table-striped">
           <thead>
-            <tr><th>Date</th><th>Ride</th><th>Time</th><th>VAM</th><th>Avg HR</th><th>Avg speed</th></tr>
+            <tr><th>Date</th><th>Ride</th><th>Time</th><th>Δ PR</th><th>VAM</th><th>Avg HR</th><th>Avg speed</th></tr>
           </thead>
           <tbody id="climb-perf-body"></tbody>
         </table>
@@ -569,12 +569,29 @@ function renderPerformances(members) {
   }
   noPerfs.classList.add('d-none');
 
+  // Personal best on elapsed time, for the PR delta column.
+  const timed = members.filter(m => m.elapsed_time_s != null);
+  const bestTime = timed.length ? Math.min(...timed.map(m => m.elapsed_time_s)) : null;
+  const fmtDelta = secs => {
+    if (secs >= 3600) return `${Math.floor(secs / 3600)}h ${String(Math.floor(secs % 3600 / 60)).padStart(2, '0')}m ${String(Math.floor(secs % 60)).padStart(2, '0')}s`;
+    if (secs >= 60) return `${Math.floor(secs / 60)}m ${String(Math.floor(secs % 60)).padStart(2, '0')}s`;
+    return `${Math.round(secs)}s`;
+  };
+
   for (const m of members) {
+    let deltaCell = '-';
+    if (bestTime != null && m.elapsed_time_s != null) {
+      const d = m.elapsed_time_s - bestTime;
+      if (d > 0) deltaCell = `<span class="text-danger">+${fmtDelta(d)}</span>`;
+      else if (d === 0) deltaCell = `<span class="text-success fw-bold">PR</span>`;
+      else deltaCell = `<span class="text-success">-${fmtDelta(-d)}</span>`;
+    }
     const row = document.createElement('tr');
     row.innerHTML = `
       <td>${fmtDate(m.start_time)}</td>
       <td><a href="#activity/${m.activity_id}" class="text-decoration-none">${escapeHtml(m.activity_name || 'Ride')}</a></td>
       <td>${m.elapsed_time_s ? fmtDuration(m.elapsed_time_s) : '-'}</td>
+      <td>${deltaCell}</td>
       <td>${m.vam ? Math.round(m.vam) + ' m/h' : '-'}</td>
       <td>${fmtHr(m.avg_hr)}</td>
       <td>${fmtSpeed(m.avg_speed)}</td>
