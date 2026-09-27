@@ -8,6 +8,7 @@ import { renderWiki } from './pages/wiki.js';
 import { renderParameters } from './pages/parameters.js';
 import { renderStatistics } from './pages/statistics.js';
 import { renderTraining } from './pages/training.js';
+import { renderExplore, renderClimbDbDetail } from './pages/explore.js';
 import { applyTheme } from './utils/theme.js';
 
 applyTheme(document.documentElement.getAttribute('data-bs-theme') || 'light');
@@ -68,6 +69,27 @@ function route() {
     showSidebar();
     renderSidebar('training');
     renderTraining().finally(() => loading.classList.add('d-none'));
+    return;
+  }
+
+  if (hash === 'explore') {
+    renderNav(false);
+    showSidebar();
+    renderSidebar('explore');
+    renderExplore().finally(() => loading.classList.add('d-none'));
+    return;
+  }
+
+  const ex = hash.match(/^explore\/(.+)$/);
+  if (ex) {
+    renderNav(true);
+    hideSidebar();
+    (async () => {
+      // The detail page needs the full database for lookup.
+      if (!document.getElementById('app')) return;
+      await renderExplore();
+      renderClimbDbDetail(ex[1]);
+    })().finally(() => loading.classList.add('d-none'));
     return;
   }
 

@@ -111,6 +111,12 @@ export async function deleteJournalPhoto(activityId, filename) {
   return res.json();
 }
 
+export async function fetchClimbDb() {
+  const res = await fetch(`${BASE}/api/climb-db`);
+  if (!res.ok) throw new Error('Failed to load climb database');
+  return res.json();
+}
+
 export async function saveClimbName(id, startDistanceM, endDistanceM, name) {
   const res = await fetch(`${BASE}/api/activity/${id}/climb-name`, {
     method: 'POST',

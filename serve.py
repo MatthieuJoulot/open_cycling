@@ -24,6 +24,7 @@ import segment_store
 import statistics
 import validated_store
 import journal
+import climb_database
 
 ROOT = Path(__file__).parent / "web"
 CLIMBS_JSON = Path(__file__).parent / "climbs.json"
@@ -102,6 +103,18 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/heatmap":
             self._send_json(json.dumps(get_heatmap()))
+            return
+        if path == "/api/climb-db":
+            data = climb_database.get_database()
+            # Attach climbed status (fast: proximity against climbs.json).
+            for c in data["climbs"]:
+                c["climbed"] = climb_database.match_climbed(c["lat"], c["lon"])
+            self._send_json(json.dumps(data))
+            return
+        if path.startswith("/api/climb-db/") and path.endswith("/enrich"):
+            cid = path.split("/")[-2]
+            rich = climb_database.enrich_climb(cid)
+            self._send_json(json.dumps(rich if rich is not None else {"error": "no geometry found"}))
             return
         if path == "/api/validated-climbs":
             self._send_json(json.dumps(validated_store.get_validated_list()))

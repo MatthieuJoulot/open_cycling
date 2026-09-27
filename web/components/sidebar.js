@@ -78,6 +78,7 @@ export async function renderSidebar(activeSection = 'feed') {
         <a href="#climbs" class="list-group-item list-group-item-action ${activeSection === 'climbs' ? 'active' : ''}">Climbs</a>
         <a href="#statistics" class="list-group-item list-group-item-action ${activeSection === 'statistics' ? 'active' : ''}">Statistics</a>
         <a href="#training" class="list-group-item list-group-item-action ${activeSection === 'training' ? 'active' : ''}">Training</a>
+        <a href="#explore" class="list-group-item list-group-item-action ${activeSection === 'explore' ? 'active' : ''}">Explore climbs</a>
         <a href="#wiki" class="list-group-item list-group-item-action ${activeSection === 'wiki' ? 'active' : ''}">Wiki</a>
         <a href="#parameters" class="list-group-item list-group-item-action ${activeSection === 'parameters' ? 'active' : ''}">Parameters</a>
       </div>
