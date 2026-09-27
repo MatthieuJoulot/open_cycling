@@ -28,6 +28,15 @@ export async function renderTraining() {
           </div>
         </div>
       </div>
+      <div class="col-12">
+        <div class="card mb-3">
+          <div class="card-header fw-semibold">Riding calendar</div>
+          <div class="card-body">
+            <div id="calendar-heatmap" class="overflow-x-auto"></div>
+            <p class="small text-muted mb-0 mt-2">Darker = more distance that day. Hover a day for details.</p>
+          </div>
+        </div>
+      </div>
       <div class="col-lg-6">
         <div class="card mb-3">
           <div class="card-header fw-semibold">Year over year — distance</div>
@@ -46,8 +55,81 @@ export async function renderTraining() {
   `;
   renderStreaks();
   renderFitness();
+  renderCalendar();
   renderYoY();
   renderGoals();
+}
+
+function renderCalendar() {
+  const el = document.getElementById('calendar-heatmap');
+  const acts = statsData.activities;
+
+  // Distance per day.
+  const byDay = {};
+  for (const a of acts) {
+    const day = a.start_time.slice(0, 10);
+    byDay[day] = (byDay[day] || 0) + (a.distance || 0);
+  }
+  const days = Object.keys(byDay).sort();
+  if (!days.length) { el.innerHTML = '<p class="text-muted mb-0">No rides.</p>'; return; }
+
+  const first = new Date(days[0] + 'T00:00:00Z');
+  const last = new Date(days[days.length - 1] + 'T00:00:00Z');
+  // Start the grid on the Monday before the first ride, end on the Sunday
+  // after the last: full weeks per year row.
+  const start = new Date(first);
+  start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7));
+  const end = new Date(last);
+  end.setUTCDate(end.getUTCDate() + (6 - (end.getUTCDay() + 6) % 7));
+
+  // Quantile-based color buckets: 0, then quartiles of ridden days.
+  const ridden = days.map(d => byDay[d]).sort((a, b) => a - b);
+  const q = p => ridden[Math.min(ridden.length - 1, Math.floor(p * (ridden.length - 1)))];
+  const thresholds = [q(0.25), q(0.5), q(0.75), q(1)].map(v => v || 0);
+  const colors = ['var(--bs-tertiary-bg)', '#c6e6c4', '#74c476', '#238b45', '#00441b'];
+
+  // Layout: one row per year, 53 week columns, 7 day cells (compact grid).
+  const years = [];
+  for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+    const y = d.getUTCFullYear();
+    if (!years.length || years[years.length - 1].year !== y) years.push({ year: y, weeks: [] });
+    const yr = years[years.length - 1];
+    const monday = new Date(d);
+    monday.setUTCDate(monday.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+    let wk = yr.weeks.find(w => w.t === monday.getTime());
+    if (!wk) { wk = { t: monday.getTime(), days: new Array(7).fill(null) }; yr.weeks.push(wk); }
+    const day = d.toISOString().slice(0, 10);
+    wk.days[(d.getUTCDay() + 6) % 7] = { day, km: byDay[day] || 0 };
+  }
+
+  const cellSize = 13, gap = 2;
+  const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+
+  // Layout: one row per year, one <td> per day, weeks left to right.
+  el.innerHTML = years.map(yr => {
+    // GitHub-style grid: 7 rows (Mon..Sun) x one column per week.
+    const grid = [[], [], [], [], [], [], []];   // grid[dayIdx][weekIdx]
+    yr.weeks.forEach((w, wi) => {
+      for (let di = 0; di < 7; di++) {
+        const cell = w.days[di];
+        if (!cell) { grid[di].push(`<td class="cal-empty" style="width:${cellSize}px;height:${cellSize}px;"></td>`); continue; }
+        const lvl = cell.km > 0 ? Math.min(4, 1 + thresholds.filter(t => cell.km > t).length) : 0;
+        const bg = lvl > 0 ? colors[lvl] : 'var(--bs-secondary-bg)';
+        grid[di].push(`<td class="cal-cell" data-day="${cell.day}" data-km="${cell.km}" style="width:${cellSize}px;height:${cellSize}px;background:${bg};border:1px solid var(--bs-border-color);border-radius:2px;" title="${cell.day}: ${cell.km ? cell.km.toFixed(1) + ' km' : 'no ride'}"></td>`);
+      }
+    });
+    const rows = grid.map(r => `<tr>${r.join('')}</tr>`).join('');
+    return `
+      <div class="d-flex align-items-start mb-2">
+        <span class="small text-muted me-2" style="width:3rem;flex:none;">${yr.year}</span>
+        <table class="cal-table m-0"><tbody>${rows}</tbody></table>
+      </div>`;
+  }).join('') + `
+    <style>
+      .cal-table { border-collapse: separate; border-spacing: ${gap}px; table-layout: fixed; }
+      .cal-table td { padding: 0; }
+      .cal-cell:hover { outline: 2px solid #0d6efd; }
+    </style>`;
 }
 
 function renderStreaks() {
