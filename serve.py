@@ -19,6 +19,7 @@ import config
 import osm_lookup
 import regions
 import segment_store
+import statistics
 import validated_store
 
 ROOT = Path(__file__).parent / "web"
@@ -39,6 +40,12 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
+    def end_headers(self):
+        # Local dev server: never let the browser cache modules or data,
+        # so code changes show up on a plain reload.
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -58,6 +65,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/climb-groups":
             self._send_json(json.dumps(get_climb_groups()))
+            return
+        if path == "/api/stats":
+            self._send_json(json.dumps(statistics.get_stats(_connect_db)))
             return
         if path == "/api/validated-climbs":
             self._send_json(json.dumps(validated_store.get_validated_list()))

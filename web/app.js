@@ -6,6 +6,7 @@ import { renderClimbs } from './pages/climbs.js';
 import { renderClimb } from './pages/climb.js';
 import { renderWiki } from './pages/wiki.js';
 import { renderParameters } from './pages/parameters.js';
+import { renderStatistics } from './pages/statistics.js';
 
 function route() {
   const hash = location.hash.replace(/^#/, '') || 'feed';
@@ -47,6 +48,14 @@ function route() {
     showSidebar();
     renderSidebar('parameters');
     renderParameters().finally(() => loading.classList.add('d-none'));
+    return;
+  }
+
+  if (hash === 'statistics') {
+    renderNav(false);
+    showSidebar();
+    renderSidebar('statistics');
+    renderStatistics().finally(() => loading.classList.add('d-none'));
     return;
   }
 

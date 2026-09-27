@@ -60,6 +60,12 @@ export async function fetchRegionsStatus() {
   return res.json();
 }
 
+export async function fetchStats() {
+  const res = await fetch(`${BASE}/api/stats`);
+  if (!res.ok) throw new Error('Failed to load statistics');
+  return res.json();
+}
+
 export async function saveClimbName(id, startDistanceM, endDistanceM, name) {
   const res = await fetch(`${BASE}/api/activity/${id}/climb-name`, {
     method: 'POST',
