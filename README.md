@@ -10,6 +10,13 @@ A local web app to detect, name, edit, and review cycling climbs from Garmin act
 - Shows activity feed, climb list, individual climb performance history, and segment editing on a map.
 - Lets you modify or add segments manually and edit climb names.
 - **Sync button**: downloads and imports new activities from Garmin Connect, then re-analyzes climbs — no command line needed.
+- **Statistics page**: per-period summary (distance, elevation, time, calories), monthly distance/elevation and rides charts, HR zone distribution, HR/speed/cadence trends, climb category distribution, hardest and favorite climbs.
+- **Best efforts**: fastest time over fixed distances (5 mile, 10K, 10 mile, 20K … 100K), computed with a rolling window over ride records and filtered by period.
+- **Climb map**: all your climbs on a map, colored by category, with popups linking to their history.
+- **GPS heatmap**: every ridden road as a thin track; overlapping rides accumulate opacity so frequent routes glow. Choice of basemap (ESRI gray or OpenTopoMap) with matching palettes.
+- **PR deltas**: each climb attempt (climb page and ride page) is compared to your personal best on that climb — green when faster, red when slower.
+- **Training page**: fitness/freshness/form chart from training load, weekly ride streaks, year-over-year distance comparison, editable monthly/yearly goals, a GitHub-style riding calendar, and a weather correlation scatter (efficiency/speed/heart rate vs temperature/altitude) with optional regression line.
+- **Dark mode**: theme toggle in the navbar, persisted per browser.
 
 ## Requirements
 
@@ -18,7 +25,7 @@ A local web app to detect, name, edit, and review cycling climbs from Garmin act
 
 ## Installation
 
-The repository is private; clone it with the GitHub CLI (or another authenticated method):
+Clone the repository:
 
 ```bash
 gh repo clone MatthieuJoulot/open_cycling
@@ -126,14 +133,15 @@ With `sync_latest` (default `true` in `config.json`), GarminDB only walks the 25
 
 ## Files
 
-- `serve.py` — API and static file server (includes `/api/sync` + `/api/sync/status`).
+- `serve.py` — API and static file server (includes `/api/sync`, `/api/stats`, `/api/heatmap`).
 - `analyze_climbs.py` — climb detection logic (incremental).
+- `statistics.py` — statistics page backend, best efforts, per-ride temperature/altitude.
 - `osm_lookup.py` — climb naming from curated list and OSM.
 - `climb_groups.py` — grouping of equivalent climbs.
 - `regions.py` — reverse geocoding of activity regions.
 - `segment_store.py` — user-defined segment edits/additions.
 - `config.py` / `config.example.json` — configuration layer.
-- `web/` — frontend JavaScript and HTML.
+- `web/` — frontend JavaScript and HTML (pages: feed, climbs, climb, activity, statistics, training, wiki, parameters).
 - `cols.json` — curated cols/passes/saddles.
 - `climbs.json`, `climb_groups.json`, `climb_names.json`, `climb_segments.json`, `cache/` — generated data (gitignored).
 
