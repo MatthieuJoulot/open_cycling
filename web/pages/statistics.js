@@ -259,7 +259,44 @@ function renderRecords() {
         </table>
       </div>
     </div>
+    ${renderBestEfforts(inPeriod)}
   ` : '';
+}
+
+function renderBestEfforts(inPeriod) {
+  const efforts = statsData.best_efforts || {};
+  const labels = { 8047: '5 mile', 10000: '10K', 16093: '10 mile', 20000: '20K', 30000: '30K', 40000: '40K', 50000: '50K', 80000: '80K', 80467: '50 mile', 90000: '90K', 100000: '100K' };
+  // Per distance, best time among rides in the period.
+  const byId = {};
+  for (const a of inPeriod) byId[a.activity_id] = a;
+  const best = {};
+  for (const [aid, eff] of Object.entries(efforts)) {
+    const act = byId[aid];
+    if (!act) continue;
+    for (const [dM, t] of Object.entries(eff)) {
+      const d = Number(dM);
+      if (!best[d] || t < best[d].t) best[d] = { t, act };
+    }
+  }
+  const dists = Object.keys(labels).map(Number).sort((a, b) => a - b);
+  const rowsEff = dists.filter(d => best[d]).map(d => `
+    <tr>
+      <td class="ps-3">${labels[d]}</td>
+      <td class="fw-semibold">${fmtDuration(best[d].t)}</td>
+      <td>${fmtSpeed(d / best[d].t * 3.6)}</td>
+      <td class="text-end pe-3">${fmtDate(best[d].act.start_time)} <a href="#activity/${best[d].act.activity_id}" class="ms-2 small">view</a></td>
+    </tr>`);
+  if (!rowsEff.length) return '';
+  return `
+    <div class="card mb-3">
+      <div class="card-header fw-semibold">Best efforts — ${periodRange(monthKey(statsData.activities.length ? statsData.activities[statsData.activities.length - 1].start_time : '')).label}</div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0">
+          <thead><tr><th>Distance</th><th>Time</th><th>Avg speed</th><th class="text-end pe-3">Date</th></tr></thead>
+          <tbody>${rowsEff.join('')}</tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 function renderCharts() {
