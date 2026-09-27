@@ -275,8 +275,7 @@ function startDownload(count, btn) {
   btn.disabled = true;
   status.textContent = 'Download started…';
   status.className = 'small mt-2 text-muted';
-  downloadHistory(count).then(() => {
-    const timer = setInterval(async () => {
+  downloadHistory(count).then(() => {    const timer = setInterval(async () => {
       try {
         const state = await fetchHistoryDownloadStatus();
         if (state.running) {
@@ -290,8 +289,9 @@ function startDownload(count, btn) {
           status.className = 'small mt-2 text-danger';
         } else {
           const r = state.result || {};
-          status.textContent = `Done — ${r.new_activities || 0} new activities, ${r.new_climbs || 0} new climbs.`;
+          status.textContent = `Done — ${r.new_activities || 0} new activities, ${r.new_climbs || 0} new climbs. Rescanning…`;
           status.className = 'small mt-2 text-success';
+          autoRescan();
         }
       } catch (e) { /* keep polling */ }
     }, 2000);
@@ -300,6 +300,28 @@ function startDownload(count, btn) {
     status.className = 'small mt-2 text-danger';
     btn.disabled = false;
   });
+}
+
+function autoRescan() {
+  const scanBtn = document.getElementById('history-scan-btn');
+  const scanStatus = document.getElementById('history-scan-status');
+  const scanResult = document.getElementById('history-scan-result');
+  scanBtn.disabled = true;
+  scanHistory().then(() => {
+    const timer = setInterval(async () => {
+      try {
+        const state = await fetchHistoryScanStatus();
+        if (state.scanning) return;
+        clearInterval(timer);
+        scanBtn.disabled = false;
+        if (state.scan_result) {
+          renderScan(state.scan_result, scanResult);
+          const status = document.getElementById('history-download-status');
+          status.textContent = '';
+        }
+      } catch (e) { /* keep polling */ }
+    }, 1000);
+  }).catch(() => { scanBtn.disabled = false; });
 }
 
 function fillForm(status) {
