@@ -147,4 +147,4 @@ With `sync_latest` (default `true` in `config.json`), GarminDB only walks the 25
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
