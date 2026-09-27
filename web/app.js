@@ -7,6 +7,7 @@ import { renderClimb } from './pages/climb.js';
 import { renderWiki } from './pages/wiki.js';
 import { renderParameters } from './pages/parameters.js';
 import { renderStatistics } from './pages/statistics.js';
+import { renderTraining } from './pages/training.js';
 import { applyTheme } from './utils/theme.js';
 
 applyTheme(document.documentElement.getAttribute('data-bs-theme') || 'light');
@@ -59,6 +60,14 @@ function route() {
     showSidebar();
     renderSidebar('statistics');
     renderStatistics().finally(() => loading.classList.add('d-none'));
+    return;
+  }
+
+  if (hash === 'training') {
+    renderNav(false);
+    showSidebar();
+    renderSidebar('training');
+    renderTraining().finally(() => loading.classList.add('d-none'));
     return;
   }
 
