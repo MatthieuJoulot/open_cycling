@@ -1,6 +1,6 @@
 import { fetchClimbMatches, fetchAllClimbNames, fetchActivityRecords, saveClimbName, validateClimb, fetchValidatedClimbs } from '../utils/api.js';
 import { openSegmentEditor } from '../components/segmentEditor.js?v=2';
-import { fmtDate, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr } from '../utils/format.js';
+import { fmtDate, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr, climbKey, pyRound } from '../utils/format.js';
 
 let currentSegment = [];
 let currentStartDistanceM = 0;
@@ -263,7 +263,7 @@ function setupModifySegmentButton(members) {
       });
       // Navigate to the new segment key (same activity, new start/end) so the
       // page reflects the modified segment instead of the stale one.
-      const newKey = `${rep.activity_id}:${Math.round(saved.start_distance_m)}:${Math.round(saved.end_distance_m)}`;
+      const newKey = climbKey(rep.activity_id, saved.start_distance_m, saved.end_distance_m);
       if (newKey !== keyOf(members, rep)) {
         window.location.hash = `#climb/${newKey}`;
       } else {
@@ -279,7 +279,7 @@ function setupModifySegmentButton(members) {
 }
 
 function keyOf(members, rep) {
-  return `${rep.activity_id}:${Math.round(rep.start_distance_m)}:${Math.round(rep.end_distance_m)}`;
+  return climbKey(rep.activity_id, rep.start_distance_m, rep.end_distance_m);
 }
 
 function renderSegmentMap(container, segment) {
@@ -595,14 +595,14 @@ function renderPerfChart(members) {
   });
 
   const ranked = validMembers.slice().sort((a, b) => meta.lowerIsBetter ? meta.value(a) - meta.value(b) : meta.value(b) - meta.value(a));
-  const medalKeys = new Set(ranked.slice(0, 3).map(m => `${m.activity_id}:${Math.round(m.start_distance_m)}:${Math.round(m.end_distance_m)}`));
+  const medalKeys = new Set(ranked.slice(0, 3).map(m => climbKey(m.activity_id, m.start_distance_m, m.end_distance_m)));
 
   const labels = members.map(m => fmtDate(m.start_time));
   const data = members.map(m => meta.value(m));
   const colors = members.map(m => {
-    const key = `${m.activity_id}:${Math.round(m.start_distance_m)}:${Math.round(m.end_distance_m)}`;
+    const key = climbKey(m.activity_id, m.start_distance_m, m.end_distance_m);
     if (!medalKeys.has(key)) return '#0d6efd';
-    const pos = ranked.findIndex(r => r.activity_id === m.activity_id && Math.round(r.start_distance_m) === Math.round(m.start_distance_m));
+    const pos = ranked.findIndex(r => r.activity_id === m.activity_id && pyRound(r.start_distance_m) === pyRound(m.start_distance_m));
     if (pos === 0) return '#ffd700';
     if (pos === 1) return '#c0c0c0';
     return '#cd7f32';

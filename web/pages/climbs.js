@@ -1,5 +1,5 @@
 import { fetchClimbs, fetchAllClimbNames, fetchClimbGroups, fetchRegions, saveSegment, deleteSegment } from '../utils/api.js';
-import { fmtDate, fmtDistance, fmtElevation, fmtGrade, fmtSpeed } from '../utils/format.js';
+import { fmtDate, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, climbKey } from '../utils/format.js';
 
 let allClimbs = [];
 let allNames = {};
@@ -39,7 +39,7 @@ export async function renderClimbs() {
               </select>
             </div>
           </div>
-          <div id="climbs-region-loading" class="small text-muted mt-2 d-none">Loading regions from Nominatim…</div>
+          <div id="climbs-region-loading" class="small text-muted mt-2 d-none">Loading regions…</div>
         </div>
       </div>
       <div class="table-responsive">
@@ -116,9 +116,7 @@ async function onGroupChange() {
     const loader = document.getElementById('climbs-region-loading');
     if (loader) loader.classList.remove('d-none');
     try {
-      allRegions = await fetchRegions();
-      allClimbs = allClimbs.map(c => ({ ...c, region: allRegions[c.key] || 'Unknown' }));
-      renderList();
+      await loadRegionsOnce();
     } catch (err) {
       console.error('Failed to load regions', err);
     } finally {
@@ -130,11 +128,42 @@ async function onGroupChange() {
   }
 }
 
+async function loadRegionsOnce() {
+  // /api/regions now returns instantly from the cache; if some climbs
+  // have no region yet the server geocodes in the background and we
+  // re-fetch when it finishes.
+  const data = await fetchRegions();
+  allRegions = data || {};
+  allClimbs = allClimbs.map(c => ({ ...c, region: allRegions[c.key] || 'Unknown' }));
+  renderList();
+  if (data && data.warming) {
+    await pollRegionsWarm();
+  }
+}
+
+async function pollRegionsWarm() {
+  // Poll the background geocode; when done, refetch regions and re-render.
+  while (true) {
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    let status = null;
+    try {
+      status = await fetchRegionsStatus();
+    } catch (err) {
+      console.warn('region status fetch failed', err);
+    }
+    if (!status || !status.running) break;
+  }
+  const data = await fetchRegions();
+  allRegions = data || {};
+  allClimbs = allClimbs.map(c => ({ ...c, region: allRegions[c.key] || 'Unknown' }));
+  renderList();
+}
+
 function flattenClimbs(activities) {
   const keyToOccurrence = {};
   for (const act of activities) {
     for (const c of act.climbs || []) {
-      const key = `${act.activity_id}:${Math.round(c.start_distance_m)}:${Math.round(c.end_distance_m)}`;
+      const key = climbKey(act.activity_id, c.start_distance_m, c.end_distance_m);
       keyToOccurrence[key] = { ...c, key, startTime: act.start_time, activityId: act.activity_id, activityName: act.name };
     }
   }

@@ -72,7 +72,18 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(json.dumps(get_config_status()))
             return
         if path == "/api/regions":
-            self._send_json(json.dumps(get_regions()))
+            # Serve from the cache only (fast); if some activities lack a
+            # region, start a background geocode and tell the client.
+            missing = len(regions._missing_activity_coords())
+            if missing:
+                start_region_warm()
+            result = get_regions()
+            result["warming"] = _region_warm_state["running"] or missing > 0
+            result["missing"] = missing
+            self._send_json(json.dumps(result))
+            return
+        if path == "/api/regions/status":
+            self._send_json(json.dumps(get_regions_status()))
             return
         if path.startswith("/api/climb/") and path.endswith("/matches"):
             key = path.split("/")[-2]
@@ -297,7 +308,7 @@ class Handler(SimpleHTTPRequestHandler):
             summary = activity_store.delete_activity_locally(activity_id)
             activity_store.remove_activity_from_analysis(activity_id)
             try:
-                groups, mapping = climb_groups.build_groups(get_climbs_with_overrides())
+                groups, mapping = climb_groups.build_groups(get_climbs_with_overrides(), validated_store.get_validated_list())
                 climb_groups.save_groups(groups, mapping)
                 summary["groups"] = len(groups)
             except Exception as exc:
@@ -376,7 +387,7 @@ def _recompute_after_segment_change(activity_id):
     # Group rebuild is local and fast; keep it synchronous so the UI that
     # reloads right after saving sees consistent groups.
     try:
-        groups, mapping = climb_groups.build_groups(get_climbs_with_overrides())
+        groups, mapping = climb_groups.build_groups(get_climbs_with_overrides(), validated_store.get_validated_list())
         climb_groups.save_groups(groups, mapping)
     except Exception as exc:
         print("group rebuild warning:", exc)
@@ -537,6 +548,32 @@ def get_regions():
     return regions.get_climb_regions()
 
 
+_region_warm_state = {"running": False, "last_done": None}
+
+
+def _region_warm_worker():
+    """Geocode any missing activity regions in the background so the API
+    never blocks on Nominatim (1 req/s makes a cold cache take minutes)."""
+    try:
+        regions.warm_activity_regions()
+        _region_warm_state["last_done"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    except Exception as exc:
+        print("region warm warning:", exc)
+    finally:
+        _region_warm_state["running"] = False
+
+
+def start_region_warm():
+    if _region_warm_state["running"]:
+        return
+    _region_warm_state["running"] = True
+    threading.Thread(target=_region_warm_worker, daemon=True).start()
+
+
+def get_regions_status():
+    return dict(_region_warm_state)
+
+
 def _parse_timestamp(value):
     if value is None:
         return None
@@ -682,7 +719,9 @@ def get_activity_details(activity_id):
         SELECT
             SUM(CASE WHEN hr IS NOT NULL THEN 1 ELSE 0 END) AS hr_n,
             SUM(CASE WHEN cadence IS NOT NULL THEN 1 ELSE 0 END) AS cadence_n,
-            SUM(CASE WHEN speed IS NOT NULL THEN 1 ELSE 0 END) AS speed_n
+            SUM(CASE WHEN speed IS NOT NULL THEN 1 ELSE 0 END) AS speed_n,
+            SUM(CASE WHEN altitude IS NOT NULL THEN 1 ELSE 0 END) AS altitude_n,
+            SUM(CASE WHEN temperature IS NOT NULL THEN 1 ELSE 0 END) AS temperature_n
         FROM activity_records
         WHERE activity_id = ?
         """,
@@ -754,6 +793,8 @@ def get_activity_details(activity_id):
             "has_power": bool(power_n),
             "has_cadence": bool(counts["cadence_n"]),
             "has_speed": bool(counts["speed_n"]),
+            "has_altitude": bool(counts["altitude_n"]),
+            "has_temperature": bool(counts["temperature_n"]),
         },
         "laps": laps,
         "climbs": activity_climbs,
@@ -863,7 +904,7 @@ def import_files(payload):
     # Segment overrides and validated names apply immediately; groups may
     # change, rebuild them so the UI is consistent.
     try:
-        groups, mapping = climb_groups.build_groups(get_climbs_with_overrides())
+        groups, mapping = climb_groups.build_groups(get_climbs_with_overrides(), validated_store.get_validated_list())
         climb_groups.save_groups(groups, mapping)
         results["groups"] = len(groups)
     except Exception as exc:
@@ -1252,7 +1293,7 @@ def run_sync(latest=None):
     _sync_log("analysis", "detecting climbs")
     analyze_climbs.main()
     _sync_log("groups", "grouping climbs")
-    groups, mapping = climb_groups.build_groups(get_climbs_with_overrides())
+    groups, mapping = climb_groups.build_groups(get_climbs_with_overrides(), validated_store.get_validated_list())
     climb_groups.save_groups(groups, mapping)
 
     new_data = _load_climbs()

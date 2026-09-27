@@ -66,15 +66,45 @@ def get_region(lat, lon):
     return region
 
 
+def get_region_cached(lat, lon):
+    """Return the cached region for a coordinate, without network access."""
+    cache = _load_json(REGIONS_CACHE, default={})
+    return cache.get(_coord_key(lat, lon)) or "Unknown"
+
+
 def get_activity_regions():
+    """Activity -> region using only the cache; never hits the network."""
     climbs_data = _load_json(ROOT / "climbs.json", default={"activities": []})
     regions = {}
     for act in climbs_data.get("activities", []):
         lat = act.get("start_lat")
         lon = act.get("start_lon")
         if lat is not None and lon is not None:
-            regions[act["activity_id"]] = get_region(lat, lon)
+            regions[act["activity_id"]] = get_region_cached(lat, lon)
     return regions
+
+
+def _missing_activity_coords():
+    """Activity ids whose start coordinates have no cached region yet."""
+    climbs_data = _load_json(ROOT / "climbs.json", default={"activities": []})
+    cache = _load_json(REGIONS_CACHE, default={})
+    missing = []
+    for act in climbs_data.get("activities", []):
+        lat = act.get("start_lat")
+        lon = act.get("start_lon")
+        if lat is None or lon is None:
+            continue
+        if _coord_key(lat, lon) not in cache:
+            missing.append((lat, lon))
+    return missing
+
+
+def warm_activity_regions():
+    """Geocode every missing activity start coordinate (network, slow)."""
+    missing = _missing_activity_coords()
+    for lat, lon in missing:
+        get_region(lat, lon)
+    return len(missing)
 
 
 def get_climb_regions():
@@ -84,7 +114,11 @@ def get_climb_regions():
     for act in climbs_data.get("activities", []):
         activity_id = act["activity_id"]
         region = activity_regions.get(activity_id, "Unknown")
-        for c in act.get("climbs", []):
+        # Apply user segment edits so modified segments are keyed by the
+        # bounds the UI actually shows (they would otherwise look up as
+        # Unknown because the auto-detected key no longer exists).
+        import segment_store
+        for c in segment_store.apply_overrides(activity_id, act.get("climbs", [])):
             key = f"{activity_id}:{int(round(c['start_distance_m']))}:{int(round(c['end_distance_m']))}"
             result[key] = region
     return result

@@ -46,8 +46,18 @@ def climbs_match(a, b, start_tol=150, end_tol=150, length_tol=0.30, elevation_to
     return True
 
 
-def build_groups(climbs_data, start_tol=150, end_tol=150, length_tol=0.30, elevation_tol=0.30):
-    """Group climbs and return (groups, climb_key_to_group_id)."""
+def build_groups(climbs_data, validated=None, start_tol=150, end_tol=150, length_tol=0.30, elevation_tol=0.30):
+    """Group climbs and return (groups, climb_key_to_group_id).
+
+    When `validated` (a list of validated climb entries) is given, every
+    climb matching a validated entry is forced into that entry's group:
+    validation is the strongest signal that two segments are the same
+    real-world climb, and it wins over the geometric matching below.
+    """
+    validated = validated or []
+    validated_groups = {}
+    next_vg = 0
+
     climbs = []
     for act in climbs_data.get("activities", []):
         for c in act.get("climbs", []):
@@ -58,15 +68,40 @@ def build_groups(climbs_data, start_tol=150, end_tol=150, length_tol=0.30, eleva
                 "start_time": act.get("start_time"),
                 "key": _climb_key(act["activity_id"], c),
             }
-            if all(c.get(k) is not None for k in ("start_lat", "start_lon", "end_lat", "end_lon")):
-                climbs.append(c)
+            climbs.append(c)
 
     groups = []
     key_to_group = {}
 
+    # First pass: seed one group per validated climb, keyed by climb_id.
+    vg_key_to_group = {}
+    for v in validated:
+        if v.get("climb_id") in validated_groups:
+            continue
+        group_id = f"g{len(groups)}"
+        groups.append({
+            "group_id": group_id,
+            "template": v,
+            "members": [],
+        })
+        validated_groups[v["climb_id"]] = group_id
+
+    # Second pass: assign each climb, validated matches first.
     for c in climbs:
+        assigned = False
+        for v in validated:
+            if climbs_match(v, c, start_tol, end_tol, length_tol, elevation_tol):
+                gid = validated_groups[v["climb_id"]]
+                groups[int(gid[1:])]["members"].append(c)
+                key_to_group[c["key"]] = gid
+                assigned = True
+                break
+        if assigned:
+            continue
         matched_group = None
         for idx, grp in enumerate(groups):
+            if grp["template"].get("climb_id") in validated_groups:
+                continue
             if climbs_match(grp["template"], c, start_tol, end_tol, length_tol, elevation_tol):
                 matched_group = idx
                 break
@@ -81,6 +116,9 @@ def build_groups(climbs_data, start_tol=150, end_tol=150, length_tol=0.30, eleva
         else:
             groups[matched_group]["members"].append(c)
             key_to_group[c["key"]] = groups[matched_group]["group_id"]
+
+    # Drop validated groups that matched nothing (shouldn't happen, but be safe).
+    groups = [g for g in groups if g["members"] or g["template"].get("climb_id") not in validated_groups]
 
     return groups, key_to_group
 
@@ -99,11 +137,45 @@ def load_groups():
     return json.loads(GROUPS_JSON.read_text(encoding="utf-8"))
 
 
+def _climbs_data_with_overrides(climbs_data):
+    """Return climbs data with segment edits and validated names applied,
+    mirroring what /api/climbs serves."""
+    import segment_store
+    import validated_store
+    data = json.loads(json.dumps(climbs_data))  # deep copy; don't mutate caller's
+    validated = validated_store.get_validated_list()
+    for act in data.get("activities", []):
+        activity_id = act.get("activity_id")
+        climbs = segment_store.apply_overrides(activity_id, act.get("climbs", []))
+        validated_store.apply_validated_names(climbs, validated)
+        act["climbs"] = climbs
+    return data
+
+
 def ensure_groups():
+    """Load groups, rebuilding when stale.
+
+    Groups go stale when climbs.json gains activities (after a sync) or when
+    segment edits change climb bounds: saved keys no longer match what the
+    API serves. Rebuild when the saved mapping doesn't cover the current
+    overridden climb keys.
+    """
+    climbs_data = _climbs_data_with_overrides(json.loads(CLIMBS_JSON.read_text(encoding="utf-8")))
+    current_keys = set()
+    for act in climbs_data.get("activities", []):
+        activity_id = act.get("activity_id")
+        for climb in act.get("climbs", []):
+            current_keys.add(_climb_key(activity_id, climb))
+
     if GROUPS_JSON.exists():
-        return load_groups()
-    climbs_data = json.loads(CLIMBS_JSON.read_text(encoding="utf-8"))
-    groups, mapping = build_groups(climbs_data)
+        data = load_groups()
+        if set(data.get("key_to_group", {})) == current_keys:
+            return data
+        stale = set(data.get("key_to_group", {})) - current_keys
+        print(f"climb groups stale ({len(current_keys)} current keys, "
+              f"{len(stale)} orphaned); rebuilding")
+    import validated_store
+    groups, mapping = build_groups(climbs_data, validated_store.get_validated_list())
     save_groups(groups, mapping)
     return load_groups()
 

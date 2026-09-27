@@ -4,6 +4,20 @@ export function fmtDate(isoString) {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+// Python's round() uses banker's rounding (half to even); the server builds
+// climb keys with it, so the browser must too or keys mismatch on .5 values.
+export function pyRound(x) {
+  const floor = Math.floor(x);
+  const diff = x - floor;
+  if (diff > 0.5) return floor + 1;
+  if (diff < 0.5) return floor;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+
+export function climbKey(activityId, startDistanceM, endDistanceM) {
+  return `${activityId}:${pyRound(startDistanceM)}:${pyRound(endDistanceM)}`;
+}
+
 export function fmtTime(isoString) {
   if (!isoString) return '';
   const d = new Date(isoString);

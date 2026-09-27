@@ -47,6 +47,22 @@ def matches_climb(validated, climb):
     return climb_groups.climbs_match(validated, climb)
 
 
+def apply_validated_names(climbs, validated):
+    """Attach validated names to matching climbs in place.
+
+    A validated name wins over any OSM/manual name: validation is the
+    strongest signal that two segments are the same real-world climb.
+    """
+    if not validated:
+        return
+    for c in climbs:
+        for v in validated:
+            if climb_groups.climbs_match(v, c):
+                c["validated_name"] = v["name"]
+                c["validated_climb_id"] = v["climb_id"]
+                break
+
+
 def validate_climb(activity_id, climb, name):
     """Add a validated climb snapshot. Rejects nameless entries."""
     name = (name or "").strip()
