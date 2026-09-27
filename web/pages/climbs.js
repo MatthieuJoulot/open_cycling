@@ -38,11 +38,18 @@ export async function renderClimbs() {
                 <option value="region">Region</option>
               </select>
             </div>
+            <div class="col-md-2">
+              <label class="form-label small text-muted">View</label>
+              <div class="btn-group w-100" role="group">
+                <button type="button" class="btn btn-sm btn-outline-secondary active" id="view-list-btn">List</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="view-map-btn">Map</button>
+              </div>
+            </div>
           </div>
           <div id="climbs-region-loading" class="small text-muted mt-2 d-none">Loading regions…</div>
         </div>
       </div>
-      <div class="table-responsive">
+      <div class="table-responsive" id="climbs-table-wrap">
         <table class="table table-sm table-striped">
           <thead>
             <tr>
@@ -60,6 +67,14 @@ export async function renderClimbs() {
           </thead>
           <tbody id="climbs-list-body"></tbody>
         </table>
+      </div>
+      <div id="climbs-map-wrap" class="d-none">
+        <div class="card mb-3">
+          <div class="card-body p-0">
+            <div id="climbs-map" style="height: 70vh; border-radius: .375rem;"></div>
+          </div>
+        </div>
+        <p class="small text-muted">Showing climb start points. Marker color = category. Click for details.</p>
       </div>
       <p id="no-climbs" class="text-muted d-none">No climbs found.</p>
     </div>
@@ -106,7 +121,76 @@ export async function renderClimbs() {
   document.getElementById('climb-search').addEventListener('input', renderList);
   document.getElementById('climb-sort').addEventListener('change', renderList);
   document.getElementById('climb-group').addEventListener('change', onGroupChange);
+  document.getElementById('view-list-btn').addEventListener('click', () => setView('list'));
+  document.getElementById('view-map-btn').addEventListener('click', () => setView('map'));
   setupModifySegmentModal();
+}
+
+let climbsMap = null;
+let climbsMapLayer = null;
+
+const CATEGORY_MARKER_COLORS = {
+  'HC': '#dc3545', 'Cat 1': '#fd7e14', 'Cat 2': '#ffc107',
+  'Cat 3': '#20c997', 'Cat 4': '#198754', 'Uncategorized': '#adb5bd',
+};
+
+function setView(view) {
+  const listWrap = document.getElementById('climbs-table-wrap');
+  const mapWrap = document.getElementById('climbs-map-wrap');
+  const listBtn = document.getElementById('view-list-btn');
+  const mapBtn = document.getElementById('view-map-btn');
+  if (view === 'map') {
+    listWrap.classList.add('d-none');
+    mapWrap.classList.remove('d-none');
+    listBtn.classList.remove('active');
+    mapBtn.classList.add('active');
+    renderClimbsMap();
+  } else {
+    listWrap.classList.remove('d-none');
+    mapWrap.classList.add('d-none');
+    listBtn.classList.add('active');
+    mapBtn.classList.remove('active');
+    if (climbsMap) climbsMap.invalidateSize();
+  }
+}
+
+function renderClimbsMap() {
+  const div = document.getElementById('climbs-map');
+  if (!climbsMap) {
+    climbsMap = L.map(div);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(climbsMap);
+    climbsMapLayer = L.layerGroup().addTo(climbsMap);
+  }
+  climbsMap.invalidateSize();
+  climbsMapLayer.clearLayers();
+
+  const withCoords = allClimbs.filter(c => c.start_lat != null && c.start_lon != null);
+  const bounds = [];
+  for (const c of withCoords) {
+    const color = CATEGORY_MARKER_COLORS[c.category] || CATEGORY_MARKER_COLORS['Uncategorized'];
+    const marker = L.circleMarker([c.start_lat, c.start_lon], {
+      radius: 7, color: '#fff', weight: 1.5, fillColor: color, fillOpacity: 0.95,
+    });
+    marker.bindPopup(`
+      <strong>${c.name ? escapeHtmlClimbs(c.name) : 'Unnamed climb'}</strong><br>
+      <span class="badge bg-secondary">${c.category || 'Uncategorized'}</span>
+      ${fmtElevation(c.elevation_gain_m)} · ${fmtDistance(c.length_m / 1000)} · ${fmtGrade(c.avg_grade_percent)}<br>
+      Done ${c.groupSize} time${c.groupSize === 1 ? '' : 's'}<br>
+      <a href="#climb/${c.key}">View climb</a>
+    `);
+    marker.addTo(climbsMapLayer);
+    bounds.push([c.start_lat, c.start_lon]);
+  }
+  if (bounds.length) climbsMap.fitBounds(bounds, { padding: [30, 30] });
+}
+
+function escapeHtmlClimbs(s) {
+  return String(s).replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
 }
 
 async function onGroupChange() {
