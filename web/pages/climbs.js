@@ -1,5 +1,4 @@
-import { fetchClimbs, fetchAllClimbNames, fetchClimbGroups, fetchRegions, saveSegment, deleteSegment } from '../utils/api.js';
-import { fmtDate, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, climbKey } from '../utils/format.js';
+import { fetchClimbs, fetchAllClimbNames, fetchClimbGroups, fetchRegions, fetchHeatmap, saveSegment, deleteSegment } from '../utils/api.js';import { fmtDate, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, climbKey } from '../utils/format.js';
 
 let allClimbs = [];
 let allNames = {};
@@ -43,7 +42,17 @@ export async function renderClimbs() {
               <div class="btn-group w-100" role="group">
                 <button type="button" class="btn btn-sm btn-outline-secondary active" id="view-list-btn">List</button>
                 <button type="button" class="btn btn-sm btn-outline-secondary" id="view-map-btn">Map</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="view-heat-btn">Heat</button>
               </div>
+            </div>
+          </div>
+          <div class="row g-2 align-items-end mt-1 d-none" id="heat-controls">
+            <div class="col-md-3">
+              <label class="form-label small text-muted">Basemap</label>
+              <select id="heat-basemap" class="form-select form-select-sm">
+                <option value="esri">ESRI gray</option>
+                <option value="topo">OpenTopoMap</option>
+              </select>
             </div>
           </div>
           <div id="climbs-region-loading" class="small text-muted mt-2 d-none">Loading regions…</div>
@@ -75,6 +84,15 @@ export async function renderClimbs() {
           </div>
         </div>
         <p class="small text-muted">Showing climb start points. Marker color = category. Click for details.</p>
+      </div>
+      <div id="climbs-heat-wrap" class="d-none">
+        <div class="card mb-3">
+          <div class="card-body p-0">
+            <div id="climbs-heat" style="height: 70vh; border-radius: .375rem;"></div>
+          </div>
+        </div>
+        <p class="small text-muted">Roads you have ridden most, by GPS pass frequency. Brighter = more passages.</p>
+      <p class="small text-muted mb-0">Tip: the heatmap reads best in dark mode — toggle ◐ in the navbar.</p>
       </div>
       <p id="no-climbs" class="text-muted d-none">No climbs found.</p>
     </div>
@@ -123,6 +141,11 @@ export async function renderClimbs() {
   document.getElementById('climb-group').addEventListener('change', onGroupChange);
   document.getElementById('view-list-btn').addEventListener('click', () => setView('list'));
   document.getElementById('view-map-btn').addEventListener('click', () => setView('map'));
+  document.getElementById('view-heat-btn').addEventListener('click', () => setView('heat'));
+  document.getElementById('heat-basemap').addEventListener('change', e => {
+    heatBasemap = e.target.value;
+    if (heatMap) applyHeatBasemap();
+  });
   setupModifySegmentModal();
 }
 
@@ -137,20 +160,119 @@ const CATEGORY_MARKER_COLORS = {
 function setView(view) {
   const listWrap = document.getElementById('climbs-table-wrap');
   const mapWrap = document.getElementById('climbs-map-wrap');
+  const heatWrap = document.getElementById('climbs-heat-wrap');
+  const heatControls = document.getElementById('heat-controls');
   const listBtn = document.getElementById('view-list-btn');
   const mapBtn = document.getElementById('view-map-btn');
-  if (view === 'map') {
-    listWrap.classList.add('d-none');
-    mapWrap.classList.remove('d-none');
-    listBtn.classList.remove('active');
-    mapBtn.classList.add('active');
-    renderClimbsMap();
+  const heatBtn = document.getElementById('view-heat-btn');
+  listWrap.classList.toggle('d-none', view !== 'list');
+  mapWrap.classList.toggle('d-none', view !== 'map');
+  heatWrap.classList.toggle('d-none', view !== 'heat');
+  heatControls.classList.toggle('d-none', view !== 'heat');
+  listBtn.classList.toggle('active', view === 'list');
+  mapBtn.classList.toggle('active', view === 'map');
+  heatBtn.classList.toggle('active', view === 'heat');
+  if (view === 'map') renderClimbsMap();
+  if (view === 'heat') renderHeatmap();
+  if (view === 'list' && climbsMap) climbsMap.invalidateSize();
+}
+
+let heatMap = null;
+let heatLayer = null;
+let heatLoading = false;
+let heatBaseLayer = null;
+let heatRefLayer = null;
+let heatBasemap = 'esri';
+let heatTracks = null;
+let heatBounds = null;
+
+// Heat map color palettes (color-hex.com/palette/55783 shape):
+// red->yellow on gray basemaps, blue->cyan on OpenTopoMap so the traces
+// contrast with the terrain's warm browns/greens.
+const HEAT_COLORS = ['#e93e3a', '#ed683c', '#f3903f', '#fdc70c', '#fff33b'];
+const HEAT_COLORS_TOPO = ['#023fa5', '#2a6fd6', '#4a9be8', '#7ec8f0', '#b8e8f7'];
+
+function applyHeatBasemap() {
+  const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+  if (heatBaseLayer) heatMap.removeLayer(heatBaseLayer);
+  if (heatRefLayer) { heatMap.removeLayer(heatRefLayer); heatRefLayer = null; }
+  if (heatBasemap === 'topo') {
+    heatBaseLayer = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+      maxZoom: 17,
+      attribution: '&copy; OpenTopoMap (CC-BY-SA)'
+    }).addTo(heatMap);
   } else {
-    listWrap.classList.remove('d-none');
-    mapWrap.classList.add('d-none');
-    listBtn.classList.add('active');
-    mapBtn.classList.remove('active');
-    if (climbsMap) climbsMap.invalidateSize();
+    heatBaseLayer = L.tileLayer(dark
+      ? 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}'
+      : 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri, HERE, Garmin'
+    }).addTo(heatMap);
+    heatRefLayer = L.tileLayer(dark
+      ? 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}'
+      : 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19
+    }).addTo(heatMap);
+  }
+  // Palette follows the basemap; redraw already-loaded tracks.
+  if (heatLayer && heatTracks) {
+    heatMap.removeLayer(heatLayer);
+    heatLayer = null;
+    drawHeatTracks();
+  }
+}
+
+function drawHeatTracks() {
+  const group = L.layerGroup();
+  const canvasRenderer = L.canvas({ padding: 0.2 });
+  const palette = heatBasemap === 'topo' ? HEAT_COLORS_TOPO : HEAT_COLORS;
+  let rendered = 0;
+  for (const tr of heatTracks) {
+    if (!tr || tr.length < 2) continue;
+    const latlngs = tr.map(p => [p[0], p[1]]);
+    L.polyline(latlngs, {
+      color: palette[rendered % palette.length],
+      weight: 1.5, opacity: 0.25, renderer: canvasRenderer,
+    }).addTo(group);
+    rendered++;
+  }
+  group.addTo(heatMap);
+  heatLayer = group;
+}
+
+async function renderHeatmap() {
+  const div = document.getElementById('climbs-heat');
+  if (!heatMap) {
+    heatMap = L.map(div);
+    applyHeatBasemap();
+  }
+  heatMap.invalidateSize();
+
+  if (heatLayer) return;   // already loaded
+  if (heatLoading) return;
+  heatLoading = true;
+  div.insertAdjacentHTML('afterbegin',
+    '<div id="heat-loading" class="position-absolute top-50 start-50 translate-middle z-3 text-bg-secondary px-3 py-2 rounded">Loading heatmap…</div>');
+  try {
+    const data = await fetchHeatmap();
+    heatTracks = data.tracks || [];
+    const bounds = L.latLngBounds();
+    for (const tr of heatTracks) {
+      if (!tr || tr.length < 2) continue;
+      bounds.extend(tr.map(p => [p[0], p[1]]));
+    }
+    drawHeatTracks();
+    if (!bounds.isValid()) return;
+    // Render at low zoom first (all lines), then let the user zoom in:
+    // at city zoom opacity per line is enough to see hot spots.
+    heatBounds = bounds;
+    heatMap.fitBounds(bounds, { padding: [30, 30] });
+  } catch (err) {
+    console.error('heatmap failed', err);
+  } finally {
+    heatLoading = false;
+    const loadingEl = document.getElementById('heat-loading');
+    if (loadingEl) loadingEl.remove();
   }
 }
 

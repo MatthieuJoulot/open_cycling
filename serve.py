@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -25,6 +26,7 @@ import validated_store
 ROOT = Path(__file__).parent / "web"
 CLIMBS_JSON = Path(__file__).parent / "climbs.json"
 DB_PATH = config.ACTIVITIES_DB
+APP_ROOT = Path(__file__).parent
 
 
 def _connect_db():
@@ -68,6 +70,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/stats":
             self._send_json(json.dumps(statistics.get_stats(_connect_db)))
+            return
+        if path == "/api/heatmap":
+            self._send_json(json.dumps(get_heatmap()))
             return
         if path == "/api/validated-climbs":
             self._send_json(json.dumps(validated_store.get_validated_list()))
@@ -351,6 +356,86 @@ class Handler(SimpleHTTPRequestHandler):
 
     def log_message(self, format, *args):
         pass  # quiet
+
+
+HEATMAP_CACHE = APP_ROOT / "cache" / "heatmap.json"
+HEATMAP_MAX_POINTS = 220      # per-ride decimation cap for the polyline
+
+
+def get_heatmap():
+    """Sampled GPS tracks of every cycling ride, one polyline per ride.
+
+    Cached in cache/heatmap.json, invalidated when the number of cycling
+    activities changes. The client draws each track as a thin low-opacity
+    line; overlapping rides accumulate alpha, so frequently-ridden roads
+    glow — a path-following heat effect (no blur blobs, no off-road dots).
+    """
+    conn = _connect_db()
+    if conn is None:
+        return {"tracks": [], "generated_at": 0}
+    try:
+        n_activities = conn.execute(
+            "SELECT COUNT(*) FROM activities WHERE sport = 'cycling'"
+        ).fetchone()[0]
+    except Exception:
+        n_activities = 0
+
+    try:
+        cache = json.loads(HEATMAP_CACHE.read_text(encoding="utf-8"))
+    except Exception:
+        cache = {}
+    if cache.get("activities") == n_activities:
+        return {
+            "tracks": cache.get("tracks", []),
+            "generated_at": cache.get("generated_at", 0),
+        }
+
+    rows = conn.execute(
+        """
+        SELECT r.activity_id, r.position_lat, r.position_long
+        FROM activity_records r
+        JOIN activities a ON a.activity_id = r.activity_id
+        WHERE r.position_lat IS NOT NULL AND r.position_long IS NOT NULL
+          AND a.sport = 'cycling'
+        ORDER BY r.activity_id, r.record
+        """
+    ).fetchall()
+
+    tracks = []
+    cur_id = None
+    pts = []
+    for r in rows:
+        if r["activity_id"] != cur_id:
+            if len(pts) > 1:
+                tracks.append(_decimate_track(pts))
+            cur_id = r["activity_id"]
+            pts = []
+        pts.append((r["position_lat"], r["position_long"]))
+    if len(pts) > 1:
+        tracks.append(_decimate_track(pts))
+
+    payload = {
+        "activities": n_activities,
+        "generated_at": time.time(),
+        "tracks": tracks,
+    }
+    try:
+        HEATMAP_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        HEATMAP_CACHE.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    return {"tracks": tracks, "generated_at": payload["generated_at"]}
+
+
+def _decimate_track(pts):
+    """Stride-sample a track down to HEATMAP_MAX_POINTS, keeping both ends."""
+    step = max(1, math.ceil(len(pts) / HEATMAP_MAX_POINTS))
+    out = [[round(la, 5), round(lo, 5)] for la, lo in pts[::step]]
+    last = pts[-1]
+    if step > 1 and (len(out) == 0 or out[-1] != [round(last[0], 5), round(last[1], 5)]):
+        out.append([round(last[0], 5), round(last[1], 5)])
+    return out
 
 
 def get_track(activity_id):
