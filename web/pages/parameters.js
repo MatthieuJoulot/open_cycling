@@ -219,7 +219,7 @@ function setupHistorySection() {
       if (ageMs < 1000 * 60 * 30) {
         const r = state.result;
         const status = document.getElementById('history-download-status');
-        status.dataset.doneMessage = `Download complete — ${r.new_activities || 0} new activities, ${r.new_climbs || 0} new climbs.`;
+        status.dataset.doneMessage = `Download complete — ${r.new_activities || 0} new ride(s) analyzed, ${r.new_climbs || 0} new climb(s).`;
         status.textContent = status.dataset.doneMessage;
         status.className = 'small mt-2 text-success fw-semibold';
       }
@@ -326,7 +326,7 @@ function watchDownload(btn) {
         status.className = 'small mt-2 text-danger';
       } else {
         const r = state.result || {};
-        status.dataset.doneMessage = `Download complete — ${r.new_activities || 0} new activities, ${r.new_climbs || 0} new climbs.`;
+        status.dataset.doneMessage = `Download complete — ${r.new_activities || 0} new ride(s) analyzed, ${r.new_climbs || 0} new climb(s).`;
         status.textContent = status.dataset.doneMessage;
         status.className = 'small mt-2 text-success fw-semibold';
         autoRescan();

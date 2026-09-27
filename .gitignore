@@ -13,3 +13,4 @@ cols.json
 venv/
 config.json
 garmindb.log
+garmindb.db

@@ -1,10 +1,12 @@
-import { fetchActivityDetails, fetchActivityRecords, fetchClimbNames, saveClimbName, identifySegments, saveSegment, validateClimb, deleteActivity } from '../utils/api.js';
+import { fetchActivityDetails, fetchActivityRecords, fetchClimbNames, saveClimbName, identifySegments, saveSegment, validateClimb, deleteActivity, fetchClimbMatches } from '../utils/api.js';
 import { openSegmentEditor } from '../components/segmentEditor.js?v=2';
-import { fmtDate, fmtTime, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr } from '../utils/format.js';
+import { openSegmentAnalysis } from '../components/segmentAnalysis.js';
+import { fmtDate, fmtTime, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr, climbKey } from '../utils/format.js';
 
 let elevationChart = null;
-let hrChart = null;
-let hrChartRendered = false;
+let graphsChart = null;
+let graphsChartRendered = false;
+const selectedMeasures = new Set();
 let map = null;
 let climbNameMap = {};
 let currentActivityId = null;
@@ -51,12 +53,17 @@ export async function renderActivity(activityId) {
         </div>
       </div>
 
-      <div class="card mb-3 activity-section" id="hr-card">
-        <button class="card-header btn btn-link text-decoration-none w-100 text-start fw-semibold collapsed" data-bs-toggle="collapse" data-bs-target="#section-hr" aria-expanded="false">
-          <span class="chevron me-2"></span>Heart rate
+      <div class="card mb-3 activity-section" id="graphs-card">
+        <button class="card-header btn btn-link text-decoration-none w-100 text-start fw-semibold collapsed" data-bs-toggle="collapse" data-bs-target="#section-graphs" aria-expanded="false">
+          <span class="chevron me-2"></span>Graphs
         </button>
-        <div class="collapse" id="section-hr">
-          <div class="card-body p-2"><canvas id="hr-chart"></canvas></div>
+        <div class="collapse" id="section-graphs">
+          <div class="card-body p-2">
+            <div id="graphs-measures" class="d-flex align-items-center flex-wrap gap-3 mb-2"></div>
+            <div style="height: 320px; position: relative;">
+              <canvas id="graphs-chart"></canvas>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -80,7 +87,7 @@ export async function renderActivity(activityId) {
   `;
 
   const details = await fetchActivityDetails(activityId);
-  const records = await fetchActivityRecords(activityId, 'distance,altitude,hr,speed,timestamp,position_lat,position_long', 3000);
+  const records = await fetchActivityRecords(activityId, 'distance,altitude,hr,speed,timestamp,position_lat,position_long,cadence,power,temperature', 3000);
 
   renderHeader(details);
   setupDeleteActivity(activityId, details.activity);
@@ -88,7 +95,7 @@ export async function renderActivity(activityId) {
   renderLapsTable(details.laps || []);
   renderMap(records, details.climbs || []);
   renderElevationChart(records, details.climbs || []);
-  renderHrChartDeferred(records, details.sensors || {});
+  renderGraphsChartDeferred(records, details.sensors || {});
   setupClimbNameLoading(activityId);
   setupIdentifySegments(activityId);
 }
@@ -159,7 +166,7 @@ function renderClimbsTable(activityId, climbs, records) {
   for (let i = 0; i < climbs.length; i++) {
     const c = climbs[i];
     const vam = computeVam(c, records);
-    const key = `${activityId}:${Math.round(c.start_distance_m)}:${Math.round(c.end_distance_m)}`;
+    const key = climbKey(activityId, c.start_distance_m, c.end_distance_m);
     const row = document.createElement('tr');
     row.dataset.climbKey = key;
     row.dataset.startDistance = c.start_distance_m;
@@ -170,6 +177,7 @@ function renderClimbsTable(activityId, climbs, records) {
         <a href="#climb/${key}" class="climb-name-link text-decoration-none text-muted">Unnamed segment</a>
         <button class="btn btn-sm btn-link py-0 climb-edit-btn" title="Edit name">✎</button>
         <button class="btn btn-sm btn-link py-0 climb-modify-btn" title="Modify segment on map">🗺</button>
+        <button class="btn btn-sm btn-link py-0 climb-analysis-btn" title="Per-bin analysis">📊</button>
         <button class="btn btn-sm btn-link py-0 climb-validate-btn text-success" title="Validate as canonical named climb">✓</button>
       </td>
       <td><span class="badge bg-secondary category-badge">${c.category}</span></td>
@@ -195,6 +203,7 @@ function renderClimbsTable(activityId, climbs, records) {
   tbody.addEventListener('click', handleClimbNameEditClick);
   tbody.addEventListener('click', e => handleClimbModifyClick(e, records));
   tbody.addEventListener('click', handleClimbValidateClick);
+  tbody.addEventListener('click', e => handleClimbAnalysisClick(e, records));
 }
 
 async function handleClimbModifyClick(e, records) {
@@ -220,6 +229,30 @@ async function handleClimbModifyClick(e, records) {
   } finally {
     btn.disabled = false;
   }
+}
+
+function handleClimbAnalysisClick(e, records) {
+  const btn = e.target.closest('.climb-analysis-btn');
+  if (!btn) return;
+  const row = btn.closest('tr');
+  if (!row) return;
+  const activityId = row.dataset.climbKey.split(':')[0];
+  const start = parseFloat(row.dataset.startDistance);
+  const end = parseFloat(row.dataset.endDistance);
+  const name = row.querySelector('.climb-name-link')?.textContent?.trim() || 'Unnamed segment';
+  const climb = {
+    activity_id: activityId,
+    start_distance_m: start,
+    end_distance_m: end,
+    name: name === 'Unnamed segment' ? null : name,
+  };
+  openSegmentAnalysis({
+    climb,
+    records,
+    activityName: null,
+    fetchMatches: fetchClimbMatches,
+    fetchRecords: fetchActivityRecords,
+  });
 }
 
 function setupClimbNameLoading(activityId) {
@@ -495,12 +528,30 @@ function renderLapsTable(laps) {
   noLaps.classList.add('d-none');
 
   for (const lap of laps) {
+    let avgSpeed = lap.avg_speed;
+    if (avgSpeed == null && lap.distance != null && lap.moving_time != null) {
+      // garmindb leaves avg_speed null on many laps; derive it from
+      // distance / moving time. moving_time arrives as seconds (number),
+      // or occasionally as an hh:mm:ss string.
+      let seconds = null;
+      if (typeof lap.moving_time === 'number') {
+        seconds = lap.moving_time;
+      } else {
+        const parts = String(lap.moving_time).split(':');
+        if (parts.length === 3) {
+          seconds = (parseInt(parts[0], 10) || 0) * 3600
+            + (parseInt(parts[1], 10) || 0) * 60
+            + (parseFloat(parts[2]) || 0);
+        }
+      }
+      if (seconds > 0) avgSpeed = lap.distance / (seconds / 3600);
+    }
     const row = document.createElement('tr');
     row.innerHTML = `
       <td>${lap.lap + 1}</td>
       <td>${fmtDistance(lap.distance)}</td>
       <td>${fmtDuration(lap.moving_time)}</td>
-      <td>${fmtSpeed(lap.avg_speed)}</td>
+      <td>${fmtSpeed(avgSpeed)}</td>
       <td>${fmtElevation(lap.ascent)}</td>
       <td>${fmtHr(lap.avg_hr)}</td>
     `;
@@ -675,7 +726,7 @@ function getOrCreateClimbTooltip() {
 
 function formatClimbTooltip(item) {
   const c = item.climb;
-  const key = `${currentActivityId || ''}:${Math.round(c.start_distance_m)}:${Math.round(c.end_distance_m)}`;
+  const key = climbKey(currentActivityId || '', c.start_distance_m, c.end_distance_m);
   const entry = climbNameMap[key];
   const name = entry?.name || `Climb ${item.idx + 1}`;
   return `
@@ -725,49 +776,90 @@ function attachClimbTooltip(chart, labels) {
   });
 }
 
-function renderHrChartDeferred(records, sensors) {
-  hrChartRendered = false;
-  const card = document.getElementById('hr-card');
+const GRAPH_MEASURES = {
+  hr: { label: 'HR', color: '#dc3545', field: 'hr', axis: 'yHr', axisTitle: 'Heart rate (bpm)', has: s => s.has_hr },
+  speed: { label: 'Speed', color: '#0d6efd', field: 'speed', axis: 'ySpeed', axisTitle: 'Speed (km/h)', has: s => s.has_speed },
+  altitude: { label: 'Altitude', color: '#198754', field: 'altitude', axis: 'yAlt', axisTitle: 'Altitude (m)', has: s => s.has_altitude !== false },
+  temperature: { label: 'Temperature', color: '#fd7e14', field: 'temperature', axis: 'yTemp', axisTitle: 'Temperature (°C)', has: s => s.has_temperature },
+  power: { label: 'Power', color: '#6f42c1', field: 'power', axis: 'yPower', axisTitle: 'Power (W)', has: s => s.has_power },
+};
+
+function renderGraphsChartDeferred(records, sensors) {
+  graphsChartRendered = false;
+  const card = document.getElementById('graphs-card');
   if (!card) return;
-  if (!sensors.has_hr) {
-    card.classList.add('d-none');
-    return;
-  }
   card.classList.remove('d-none');
-  const collapse = document.getElementById('section-hr');
+  const collapse = document.getElementById('section-graphs');
   collapse.addEventListener('shown.bs.collapse', () => {
-    if (!hrChartRendered) renderHrChart(records, sensors);
+    if (!graphsChartRendered) renderGraphsChart(records, sensors);
   }, { once: true });
 }
 
-function renderHrChart(records, sensors) {
-  const card = document.getElementById('hr-card');
-  if (!sensors.has_hr) {
-    card.classList.add('d-none');
-    return;
-  }
-  card.classList.remove('d-none');
+function renderGraphsChart(records, sensors) {
+  if (graphsChart) graphsChart.destroy();
+  const ctx = document.getElementById('graphs-chart').getContext('2d');
+  const container = document.getElementById('graphs-measures');
+  container.innerHTML = '';
 
-  if (hrChart) hrChart.destroy();
-  const ctx = document.getElementById('hr-chart').getContext('2d');
+  // Which measures this activity actually has data for.
+  const available = Object.entries(GRAPH_MEASURES).filter(([, m]) => {
+    try { return m.has(sensors); } catch { return false; }
+  });
+  // Defaults only on first render; after that the user's ticks stick.
+  if (selectedMeasures.size === 0) {
+    if (available.some(([id]) => id === 'hr')) selectedMeasures.add('hr');
+    if (available.some(([id]) => id === 'speed')) selectedMeasures.add('speed');
+  }
 
   const labels = records.map(p => (p.distance / 1000).toFixed(1));
-  const data = records.map(p => p.hr);
 
-  hrChart = new window.Chart(ctx, {
+  for (const [id, m] of available) {
+    const wrap = document.createElement('div');
+    wrap.className = 'form-check mb-0';
+    wrap.innerHTML = `
+      <input class="form-check-input" type="checkbox" id="graph-measure-${id}" ${selectedMeasures.has(id) ? 'checked' : ''}>
+      <label class="form-check-label small" for="graph-measure-${id}"><span style="color:${m.color};">■</span> ${m.label}</label>`;
+    container.appendChild(wrap);
+    wrap.querySelector('input').addEventListener('change', e => {
+      if (e.target.checked) selectedMeasures.add(id); else selectedMeasures.delete(id);
+      renderGraphsChart(records, sensors);
+    });
+  }
+
+  const scales = {
+    x: { title: { display: true, text: 'Distance (km)' }, ticks: { maxTicksLimit: 10 } }
+  };
+  const datasets = [];
+  let axisCount = 0;
+  for (const [id, m] of available) {
+    if (!selectedMeasures.has(id)) continue;
+    const data = records.map(p => p[m.field]);
+    datasets.push({
+      label: m.axisTitle,
+      data,
+      borderColor: m.color,
+      backgroundColor: m.color,
+      borderWidth: 1.5,
+      pointRadius: 0,
+      fill: false,
+      tension: 0.1,
+      yAxisID: m.axis,
+      spanGaps: true,
+    });
+    // Alternate axes left/right; grid only from the first axis so the
+    // background stays readable with several measures shown.
+    scales[m.axis] = {
+      position: axisCount % 2 === 0 ? 'left' : 'right',
+      title: { display: true, text: m.axisTitle, color: m.color },
+      ticks: { color: m.color },
+      grid: { drawOnChartArea: axisCount === 0 },
+    };
+    axisCount++;
+  }
+
+  graphsChart = new window.Chart(ctx, {
     type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Heart rate (bpm)',
-        data,
-        borderColor: '#dc3545',
-        borderWidth: 1.5,
-        pointRadius: 0,
-        fill: false,
-        tension: 0.1
-      }]
-    },
+    data: { labels, datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -776,11 +868,8 @@ function renderHrChart(records, sensors) {
         legend: { display: false },
         tooltip: { callbacks: { title: items => `km ${items[0].label}` } }
       },
-      scales: {
-        x: { title: { display: true, text: 'Distance (km)' }, ticks: { maxTicksLimit: 10 } },
-        y: { title: { display: true, text: 'Heart rate (bpm)' } }
-      }
+      scales
     }
   });
-  hrChartRendered = true;
+  graphsChartRendered = true;
 }
