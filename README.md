@@ -107,9 +107,9 @@ python3 serve.py
 
 Open `http://127.0.0.1:8080`.
 
-### Import from another installation
+### Segment databases
 
-If you already ran the app elsewhere (or want a friend's curated cols list), the Parameters page has an **Import user data** section: give the path of a source `cols.json`, `climb_segments.json`, `climb_names.json`, or `validated_climbs.json` and it is copied into this installation. Files not given are skipped; the source is never modified.
+If you already ran the app elsewhere (or want a friend's curated cols list), the Parameters page has a **Segment databases** section: give the path of a source `cols.json`, `climb_segments.json`, `climb_names.json`, or `validated_climbs.json` and it is copied into this installation. Files not given are skipped; the source is never modified.
 
 ## First sync and later syncs
 

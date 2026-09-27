@@ -65,6 +65,9 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/history/scan/status":
             self._send_json(json.dumps(get_history_status()))
             return
+        if path == "/api/history/download/status":
+            self._send_json(json.dumps(get_sync_status()))
+            return
         if path == "/api/config":
             self._send_json(json.dumps(get_config_status()))
             return
@@ -1073,48 +1076,45 @@ def _garmindb_interpreter():
     return str(venv_python) if venv_python.exists() else sys.executable
 
 
+def _run_scan_once():
+    """Run the scan script, return its result dict or None on failure.
+    Sets _HISTORY_STATE['scan_error'] on failure."""
+    interp = _garmindb_interpreter()
+    if not interp:
+        _HISTORY_STATE["scan_error"] = "garmindb_cli not configured: cannot scan"
+        return None
+    try:
+        proc = subprocess.run(
+            [interp, str(Path(__file__).parent / "scan_garmin_history.py")],
+            capture_output=True, text=True, timeout=120,
+        )
+        if proc.returncode != 0:
+            _HISTORY_STATE["scan_error"] = (proc.stderr or proc.stdout or "scan failed")[-500:]
+            return None
+        data = json.loads(proc.stdout.strip().split("\n")[-1])
+        if "error" in data:
+            _HISTORY_STATE["scan_error"] = data["error"]
+            return None
+        return data
+    except Exception as exc:
+        _HISTORY_STATE["scan_error"] = str(exc)
+        return None
+
+
 def scan_history():
     """List the Garmin Connect activity history (no download) in background."""
     if _HISTORY_STATE["scanning"]:
         return {"ok": True, "already_running": True}
-    interp = _garmindb_interpreter()
-    if not interp:
+    if not _garmindb_interpreter():
         return {"ok": False, "error": "garmindb_cli not configured: cannot scan"}
     _HISTORY_STATE.update({"scanning": True, "scan_error": None})
 
     def worker():
-        try:
-            proc = subprocess.run(
-                [interp, str(Path(__file__).parent / "scan_garmin_history.py")],
-                capture_output=True, text=True, timeout=120,
-            )
-            if proc.returncode != 0:
-                _HISTORY_STATE.update({
-                    "scanning": False,
-                    "scan_error": (proc.stderr or proc.stdout or "scan failed")[-500:],
-                    "scan_finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                })
-                return
-            # The script prints one JSON object on its last stdout line.
-            data = json.loads(proc.stdout.strip().split("\n")[-1])
-            if "error" in data:
-                _HISTORY_STATE.update({
-                    "scanning": False,
-                    "scan_error": data["error"],
-                    "scan_finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                })
-                return
-            _HISTORY_STATE.update({
-                "scanning": False,
-                "scan_result": data,
-                "scan_finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            })
-        except Exception as exc:
-            _HISTORY_STATE.update({
-                "scanning": False,
-                "scan_error": str(exc),
-                "scan_finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            })
+        data = _run_scan_once()
+        _HISTORY_STATE["scanning"] = False
+        if data is not None:
+            _HISTORY_STATE["scan_result"] = data
+        _HISTORY_STATE["scan_finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     threading.Thread(target=worker, daemon=True).start()
     return {"ok": True, "started": True}
@@ -1128,11 +1128,13 @@ GARMINDB_CONFIG_FILE = Path.home() / ".GarminDb" / "GarminConnectConfig.json"
 
 
 def start_history_download(count):
-    """Download `count` oldest-missing activities in the background.
+    """Download `count` more activities in the background.
 
     GarminDB walks the most recent `download_all_activities` activities and
-    skips files already on disk, so raising the cap by `count` fetches
-    exactly the next chunk of history.
+    skips files already on disk. Setting the cap to (local + count) makes it
+    walk only `count` activities beyond what is already downloaded. Requires
+    a scan first (provides the local count); falls back to counting files in
+    the GarminDB activities directory.
     """
     with _sync_lock:
         if _sync_state["running"]:
@@ -1144,8 +1146,21 @@ def start_history_download(count):
             gc_config = json.loads(GARMINDB_CONFIG_FILE.read_text(encoding="utf-8"))
         except Exception as exc:
             return {"ok": False, "error": f"could not read {GARMINDB_CONFIG_FILE}: {exc}"}
-        current = int(gc_config.get("data", {}).get("download_all_activities", 1000))
-        gc_config.setdefault("data", {})["download_all_activities"] = current + int(count)
+
+        scan = _HISTORY_STATE.get("scan_result") or {}
+        local = scan.get("local")
+        if not local:
+            # No fresh scan result: run one synchronously (it takes seconds).
+            _HISTORY_STATE["scanning"] = True
+            result = _run_scan_once()
+            _HISTORY_STATE["scanning"] = False
+            _HISTORY_STATE["scan_finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            if result is None:
+                return {"ok": False, "error": _HISTORY_STATE.get("scan_error") or "scan failed"}
+            _HISTORY_STATE["scan_result"] = result
+            local = result.get("local", 0)
+
+        gc_config.setdefault("data", {})["download_all_activities"] = int(local) + int(count)
         GARMINDB_CONFIG_FILE.write_text(
             json.dumps(gc_config, indent=4, ensure_ascii=False), encoding="utf-8"
         )

@@ -78,7 +78,7 @@ export async function renderParameters() {
       </div>
 
       <div class="card mb-3">
-        <div class="card-header fw-semibold">Import user data</div>
+        <div class="card-header fw-semibold">Segment databases</div>
         <div class="card-body">
           <p class="small text-muted mb-2">
             Copy a curated cols list, your segment edits, climb names, or validated climbs from another installation.
