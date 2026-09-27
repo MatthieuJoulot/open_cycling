@@ -7,6 +7,9 @@ import { renderClimb } from './pages/climb.js';
 import { renderWiki } from './pages/wiki.js';
 import { renderParameters } from './pages/parameters.js';
 import { renderStatistics } from './pages/statistics.js';
+import { applyTheme } from './utils/theme.js';
+
+applyTheme(document.documentElement.getAttribute('data-bs-theme') || 'light');
 
 function route() {
   const hash = location.hash.replace(/^#/, '') || 'feed';

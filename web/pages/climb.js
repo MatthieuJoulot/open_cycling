@@ -623,11 +623,12 @@ function renderPerfChart(members) {
 
   const datasets = [];
   if (regression) {
+    const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
     datasets.push({
       label: `Regression (R² ${regression.r2.toFixed(2)})`,
       data: regression.predicted,
       type: 'line',
-      borderColor: '#343a40',
+      borderColor: dark ? '#adb5bd' : '#343a40',
       borderWidth: 3,
       pointRadius: 0,
       fill: false,

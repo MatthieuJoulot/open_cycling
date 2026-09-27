@@ -688,7 +688,8 @@ function renderElevationChart(records, climbs) {
 
           ctx.beginPath();
           ctx.arc(px, py, radius, 0, 2 * Math.PI);
-          ctx.fillStyle = 'white';
+          const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+          ctx.fillStyle = dark ? '#212529' : 'white';
           ctx.fill();
           ctx.strokeStyle = '#842029';
           ctx.lineWidth = 1.5;
@@ -697,7 +698,7 @@ function renderElevationChart(records, climbs) {
           ctx.font = 'bold 10px system-ui, -apple-system, sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillStyle = '#842029';
+          ctx.fillStyle = dark ? '#ea9aa5' : '#842029';
           ctx.fillText(item.idx + 1, px, py + 0.5);
         }
         ctx.restore();
@@ -718,7 +719,7 @@ function getOrCreateClimbTooltip() {
     tip.style.display = 'none';
     tip.style.pointerEvents = 'none';
     tip.style.zIndex = '1000';
-    tip.style.background = 'white';
+    tip.style.background = 'var(--bs-body-bg)';
     document.body.appendChild(tip);
   }
   return tip;

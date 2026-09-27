@@ -382,7 +382,8 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
           ctx.save();
           ctx.font = '11px sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+          ctx.fillStyle = document.documentElement.getAttribute('data-bs-theme') === 'dark'
+            ? 'rgba(255, 255, 255, 0.75)' : 'rgba(0, 0, 0, 0.75)';
           bins.forEach((b, i) => {
             if (b.grade == null) return;
             const bar = bars[i];
