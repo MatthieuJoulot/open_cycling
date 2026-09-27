@@ -206,6 +206,25 @@ function setupHistorySection() {
       renderScan(state.scan_result, scanResult);
     }
   }).catch(() => {});
+
+  // Show a download in progress or a recently finished one the user may
+  // not have seen (e.g. they were on another page while it ran).
+  fetchHistoryDownloadStatus().then(state => {
+    if (state.running) {
+      const fakeBtn = document.createElement('button');
+      fakeBtn.disabled = true;
+      watchDownload(fakeBtn);
+    } else if (state.finished_at && state.result && state.result.ok) {
+      const ageMs = Date.now() - new Date(state.finished_at).getTime();
+      if (ageMs < 1000 * 60 * 30) {
+        const r = state.result;
+        const status = document.getElementById('history-download-status');
+        status.dataset.doneMessage = `Download complete — ${r.new_activities || 0} new activities, ${r.new_climbs || 0} new climbs.`;
+        status.textContent = status.dataset.doneMessage;
+        status.className = 'small mt-2 text-success fw-semibold';
+      }
+    }
+  }).catch(() => {});
 }
 
 function pollScan(scanBtn, scanStatus, scanResult) {
@@ -281,31 +300,39 @@ function startDownload(count, btn) {
   btn.disabled = true;
   status.textContent = 'Download started…';
   status.className = 'small mt-2 text-muted';
-  downloadHistory(count).then(() => {    const timer = setInterval(async () => {
-      try {
-        const state = await fetchHistoryDownloadStatus();
-        if (state.running) {
-          status.textContent = 'Downloading… ' + (state.last_log ? state.last_log[state.last_log.length - 1] : '');
-          return;
-        }
-        clearInterval(timer);
-        btn.disabled = false;
-        if (state.error) {
-          status.textContent = 'Download failed: ' + state.error;
-          status.className = 'small mt-2 text-danger';
-        } else {
-          const r = state.result || {};
-          status.textContent = `Done — ${r.new_activities || 0} new activities, ${r.new_climbs || 0} new climbs. Rescanning…`;
-          status.className = 'small mt-2 text-success';
-          autoRescan();
-        }
-      } catch (e) { /* keep polling */ }
-    }, 2000);
+  downloadHistory(count).then(() => {
+    watchDownload(btn);
   }).catch(err => {
     status.textContent = err.message || 'Failed to start download';
     status.className = 'small mt-2 text-danger';
     btn.disabled = false;
   });
+}
+
+function watchDownload(btn) {
+  const status = document.getElementById('history-download-status');
+  const timer = setInterval(async () => {
+    try {
+      const state = await fetchHistoryDownloadStatus();
+      if (state.running) {
+        status.textContent = 'Downloading… ' + (state.last_log ? state.last_log[state.last_log.length - 1] : '');
+        status.className = 'small mt-2 text-muted';
+        return;
+      }
+      clearInterval(timer);
+      if (btn) btn.disabled = false;
+      if (state.error) {
+        status.textContent = 'Download failed: ' + state.error;
+        status.className = 'small mt-2 text-danger';
+      } else {
+        const r = state.result || {};
+        status.dataset.doneMessage = `Download complete — ${r.new_activities || 0} new activities, ${r.new_climbs || 0} new climbs.`;
+        status.textContent = status.dataset.doneMessage;
+        status.className = 'small mt-2 text-success fw-semibold';
+        autoRescan();
+      }
+    } catch (e) { /* keep polling */ }
+  }, 2000);
 }
 
 function autoRescan() {
@@ -322,8 +349,12 @@ function autoRescan() {
         scanBtn.disabled = false;
         if (state.scan_result) {
           renderScan(state.scan_result, scanResult);
+          // Keep the green completion message visible across re-renders.
           const status = document.getElementById('history-download-status');
-          status.textContent = '';
+          if (status && status.dataset.doneMessage && !state.scanning) {
+            status.textContent = status.dataset.doneMessage;
+            status.className = 'small mt-2 text-success fw-semibold';
+          }
         }
       } catch (e) { /* keep polling */ }
     }, 1000);
