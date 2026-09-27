@@ -72,6 +72,45 @@ export async function fetchHeatmap() {
   return res.json();
 }
 
+export async function fetchJournal(activityId) {
+  const res = await fetch(`${BASE}/api/activity/${activityId}/journal`);
+  if (!res.ok) throw new Error('Failed to load journal');
+  return res.json();
+}
+
+export async function saveJournalNote(activityId, note) {
+  const res = await fetch(`${BASE}/api/activity/${activityId}/journal`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note }),
+  });
+  if (!res.ok) throw new Error('Failed to save note');
+  return res.json();
+}
+
+export async function uploadJournalPhoto(activityId, file) {
+  const form = new FormData();
+  form.append('photo', file);
+  const res = await fetch(`${BASE}/api/activity/${activityId}/photos`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) {
+    let msg = `Failed to upload photo (${res.status})`;
+    try { msg = (await res.json()).error || msg; } catch (e) { /* error body not json */ }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+export async function deleteJournalPhoto(activityId, filename) {
+  const res = await fetch(`${BASE}/api/activity/${activityId}/photos/${encodeURIComponent(filename)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('Failed to delete photo');
+  return res.json();
+}
+
 export async function saveClimbName(id, startDistanceM, endDistanceM, name) {
   const res = await fetch(`${BASE}/api/activity/${id}/climb-name`, {
     method: 'POST',

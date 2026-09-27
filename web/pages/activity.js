@@ -1,4 +1,4 @@
-import { fetchActivityDetails, fetchActivityRecords, fetchClimbNames, saveClimbName, identifySegments, saveSegment, validateClimb, deleteActivity, fetchClimbMatches } from '../utils/api.js';
+import { fetchActivityDetails, fetchActivityRecords, fetchClimbNames, saveClimbName, identifySegments, saveSegment, validateClimb, deleteActivity, fetchClimbMatches, fetchJournal, saveJournalNote, uploadJournalPhoto, deleteJournalPhoto } from '../utils/api.js';
 import { openSegmentEditor } from '../components/segmentEditor.js?v=2';
 import { openSegmentAnalysis } from '../components/segmentAnalysis.js';
 import { fmtDate, fmtTime, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr, climbKey } from '../utils/format.js';
@@ -17,6 +17,25 @@ export async function renderActivity(activityId) {
   app.innerHTML = `
     <div id="activity-view">
       <div id="activity-header" class="mb-3"></div>
+
+      <div class="card mb-3 activity-section" id="journal-card">
+        <button class="card-header btn btn-link text-decoration-none w-100 text-start fw-semibold" data-bs-toggle="collapse" data-bs-target="#section-journal" aria-expanded="true">
+          <span class="chevron me-2"></span>Journal
+        </button>
+        <div class="collapse show" id="section-journal">
+          <div class="card-body">
+            <textarea id="journal-note" class="form-control" rows="3" placeholder="How was this ride?"></textarea>
+            <button id="journal-save-btn" class="btn btn-sm btn-outline-primary mt-2">Save note</button>
+            <span id="journal-saved-msg" class="small text-success ms-2 d-none">Saved ✓</span>
+            <div id="journal-photos" class="row g-2 mt-2"></div>
+            <div class="d-flex gap-2 mt-2 align-items-center">
+              <label class="btn btn-sm btn-outline-secondary mb-0" for="journal-photo-input">Add photos</label>
+              <input type="file" id="journal-photo-input" accept="image/jpeg,image/png,image/webp,image/heic" multiple class="d-none">
+              <span id="journal-upload-msg" class="small text-muted"></span>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div class="card mb-3 activity-section">
         <div class="card-header fw-semibold">Map</div>
@@ -92,6 +111,7 @@ export async function renderActivity(activityId) {
   renderHeader(details);
   setupDeleteActivity(activityId, details.activity);
   renderClimbsTable(activityId, details.climbs || [], records);
+  setupJournal(activityId);
   renderLapsTable(details.laps || []);
   renderMap(records, details.climbs || []);
   renderElevationChart(records, details.climbs || []);
@@ -148,6 +168,89 @@ function setupDeleteActivity(activityId, act) {
       alert(err.message || 'Delete failed');
       btn.disabled = false;
       btn.textContent = 'Delete';
+    }
+  });
+}
+
+async function setupJournal(activityId) {
+  const noteEl = document.getElementById('journal-note');
+  const saveBtn = document.getElementById('journal-save-btn');
+  const savedMsg = document.getElementById('journal-saved-msg');
+  const photosEl = document.getElementById('journal-photos');
+  const input = document.getElementById('journal-photo-input');
+  const uploadMsg = document.getElementById('journal-upload-msg');
+  if (!noteEl) return;
+
+  let entry;
+  try {
+    entry = await fetchJournal(activityId);
+  } catch (err) {
+    uploadMsg.textContent = 'Journal unavailable.';
+    return;
+  }
+  noteEl.value = entry.note || '';
+
+  const renderPhotos = photos => {
+    photosEl.innerHTML = (photos || []).map(p => `
+      <div class="col-6 col-md-3 position-relative journal-photo-item" data-file="${p.file}">
+        <img src="/api/media/${p.file}" class="img-fluid rounded w-100 journal-photo-img" style="height: 120px; object-fit: cover; cursor: pointer;" alt="Photo">
+        <button class="btn btn-sm btn-danger position-absolute top-0 end-0 m-1 journal-photo-del" title="Delete photo">×</button>
+      </div>
+    `).join('');
+  };
+  renderPhotos(entry.photos);
+
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    try {
+      await saveJournalNote(activityId, noteEl.value);
+      savedMsg.classList.remove('d-none');
+      setTimeout(() => savedMsg.classList.add('d-none'), 2000);
+    } catch (err) {
+      alert('Could not save note: ' + (err?.message || err));
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+
+  input.addEventListener('change', async () => {
+    const files = [...input.files];
+    input.value = '';
+    if (!files.length) return;
+    for (const f of files) {
+      uploadMsg.textContent = `Uploading ${f.name}…`;
+      try {
+        const r = await uploadJournalPhoto(activityId, f);
+        // Re-render from the server list:
+        const fresh = await fetchJournal(activityId);
+        renderPhotos(fresh.photos);
+        uploadMsg.textContent = '';
+      } catch (err) {
+        uploadMsg.textContent = err?.message || 'Upload failed';
+      }
+    }
+  });
+
+  photosEl.addEventListener('click', async e => {
+    const del = e.target.closest('.journal-photo-del');
+    if (del) {
+      const file = del.closest('.journal-photo-item').dataset.file;
+      try {
+        await deleteJournalPhoto(activityId, file);
+        const fresh = await fetchJournal(activityId);
+        renderPhotos(fresh.photos);
+      } catch (err) {
+        alert('Could not delete photo: ' + (err?.message || err));
+      }
+      return;
+    }
+    const img = e.target.closest('.journal-photo-img');
+    if (img) {
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:2000;display:flex;align-items:center;justify-content:center;cursor:zoom-out;';
+      overlay.innerHTML = `<img src="${img.src}" style="max-width:95vw;max-height:95vh;border-radius:.5rem;">`;
+      overlay.addEventListener('click', () => overlay.remove());
+      document.body.appendChild(overlay);
     }
   });
 }

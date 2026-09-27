@@ -3,6 +3,7 @@
 import datetime
 import json
 import math
+import re
 import sqlite3
 import subprocess
 import sys
@@ -22,6 +23,7 @@ import regions
 import segment_store
 import statistics
 import validated_store
+import journal
 
 ROOT = Path(__file__).parent / "web"
 CLIMBS_JSON = Path(__file__).parent / "climbs.json"
@@ -70,6 +72,33 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/api/stats":
             self._send_json(json.dumps(statistics.get_stats(_connect_db)))
+            return
+        if path.startswith("/api/activity/") and path.endswith("/journal"):
+            activity_id = path.split("/")[-2]
+            self._send_json(json.dumps(journal.get_entry(activity_id)))
+            return
+        if path.startswith("/api/media/"):
+            filename = path.split("/")[-1]
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", filename):
+                self.send_error(400, "Bad filename")
+                return
+            media = journal.media_dir_path()
+            f = media / filename if media else None
+            if not f or not f.is_file():
+                self.send_error(404, "Not found")
+                return
+            ctype = {
+                ".jpeg": "image/jpeg", ".jpg": "image/jpeg",
+                ".png": "image/png", ".webp": "image/webp",
+                ".heic": "image/heic",
+            }.get(f.suffix.lower(), "application/octet-stream")
+            data = f.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "max-age=3600")
+            self.end_headers()
+            self.wfile.write(data)
             return
         if path == "/api/heatmap":
             self._send_json(json.dumps(get_heatmap()))
@@ -133,9 +162,105 @@ class Handler(SimpleHTTPRequestHandler):
             return
         return super().do_GET()
 
+    def do_DELETE(self):
+        self.do_POST()
+
+    def _handle_photo_upload(self, activity_id):
+        """Parse a multipart/form-data upload and store one photo."""
+        ctype = self.headers.get("Content-Type", "")
+        m = re.search(r'boundary=(?:"([^"]+)"|([^;]+))', ctype)
+        if "multipart/form-data" not in ctype or not m:
+            self.send_error(400, "Expected multipart/form-data")
+            return
+        boundary = (m.group(1) or m.group(2)).strip().encode("utf-8")
+        length = int(self.headers.get("Content-Length", 0))
+        if length > journal.MAX_PHOTO_BYTES + 64 * 1024:
+            self.send_error(413, "File too large")
+            return
+        body = self.rfile.read(length)
+
+        # Minimal multipart parse: split on boundary, keep parts with files.
+        delim = b"--" + boundary
+        parts = body.split(delim)
+        for part in parts:
+            if b"filename=" not in part[:2048]:
+                continue
+            header_blob, _, file_data = part.partition(b"\r\n\r\n")
+            file_data = file_data.rsplit(b"\r\n", 1)[0]
+            fm = re.search(rb'filename="([^"]+)"', header_blob)
+            if not fm:
+                continue
+            original = fm.group(1).decode("utf-8", "replace")
+            ext = journal.sanitize_extension(original)
+            if ext is None:
+                self.send_error(400, f"Unsupported file type: {original}")
+                return
+            if not file_data:
+                self.send_error(400, "Empty file")
+                return
+            media = journal.media_dir_path()
+            if media is None:
+                self.send_error(400, "Media directory not configured")
+                return
+            filename = journal.new_media_filename(activity_id, ext)
+            dest = media / filename
+            dest.write_bytes(file_data)
+            # HEIC can't be rendered by most browsers; convert to JPEG
+            # with macOS's built-in sips so every browser shows it.
+            if ext == ".heic":
+                jpeg_path = dest.with_suffix(".jpeg")
+                try:
+                    subprocess.run(
+                        ["sips", "-s", "format", "jpeg", str(dest),
+                         "--out", str(jpeg_path)],
+                        check=True, capture_output=True, timeout=30)
+                    dest.unlink(missing_ok=True)
+                    filename = jpeg_path.name
+                except Exception:
+                    filename = None   # conversion failed: reject
+            if filename is None:
+                self.send_error(422, "HEIC conversion failed")
+                return
+            entry = journal.add_photo(activity_id, filename)
+            self._send_json(json.dumps({"photo": entry}))
+            return
+        self.send_error(400, "No file part found")
+
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path.startswith("/api/activity/") and path.endswith("/journal"):
+            activity_id = path.split("/")[-2]
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except Exception as exc:
+                self.send_error(400, f"Invalid JSON: {exc}")
+                return
+            note = journal.save_note(activity_id, payload.get("note", ""))
+            self._send_json(json.dumps({"note": note}))
+            return
+
+        if path.startswith("/api/activity/") and path.endswith("/photos"):
+            activity_id = path.split("/")[-2]
+            self._handle_photo_upload(activity_id)
+            return
+
+        if path.startswith("/api/activity/") and "/photos/" in path:
+            # DELETE /api/activity/<id>/photos/<filename>
+            activity_id = path.split("/")[3]
+            filename = path.split("/")[-1]
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", filename):
+                self.send_error(400, "Bad filename")
+                return
+            ok = journal.delete_photo(activity_id, filename)
+            if not ok:
+                self.send_error(404, "Photo not found")
+                return
+            self._send_json(json.dumps({"ok": True}))
+            return
 
         if path.startswith("/api/activity/") and path.endswith("/climb-name"):
             activity_id = path.split("/")[-2]
@@ -592,12 +717,15 @@ def _load_climbs():
 def get_climbs_with_overrides():
     data = _load_climbs()
     validated = validated_store.get_validated_list()
+    activity_ids = [act.get("activity_id") for act in data.get("activities", [])]
+    journal_badges = journal.feed_badges(activity_ids)
     for act in data.get("activities", []):
         activity_id = act.get("activity_id")
         auto_climbs = act.get("climbs", [])
         climbs = segment_store.apply_overrides(activity_id, auto_climbs)
         _apply_validated_names(climbs, validated)
         act["climbs"] = climbs
+        act["journal"] = journal_badges.get(str(activity_id))
     return data
 
 

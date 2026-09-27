@@ -19,6 +19,7 @@ DEFAULTS = {
     "fit_dir": "",
     "personal_info_json": "",
     "garmindb_cli": "",
+    "media_dir": "",
     "port": 8080,
     "sync_latest": True,
 }
@@ -30,6 +31,7 @@ ENV_VARS = {
     "fit_dir": "CLIMB_ANALYZER_FIT_DIR",
     "personal_info_json": "CLIMB_ANALYZER_PERSONAL_INFO",
     "garmindb_cli": "CLIMB_ANALYZER_GARMINDB_CLI",
+    "media_dir": "CLIMB_ANALYZER_MEDIA_DIR",
     "port": "CLIMB_ANALYZER_PORT",
 }
 

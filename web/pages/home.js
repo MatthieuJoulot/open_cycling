@@ -127,17 +127,25 @@ function renderFeed(activities) {
     card.className = 'card mb-3 activity-card';
     const date = fmtDate(act.start_time);
     const time = fmtTime(act.start_time);
+    const j = act.journal;
+    const photoHtml = j && j.first_photo ? `
+      <div class="col-md-3 position-relative">
+        <a href="#activity/${act.activity_id}" class="d-block">
+          <img src="/api/media/${j.first_photo}" class="rounded border w-100" style="height:140px;object-fit:cover;" alt="Photo">
+          ${j.photo_count > 1 ? `<span class="badge bg-dark position-absolute bottom-0 end-0 m-1">+${j.photo_count - 1}</span>` : ''}
+        </a>
+      </div>` : '';
     card.innerHTML = `
       <div class="card-header d-flex justify-content-between align-items-center">
         <a href="#activity/${act.activity_id}" class="text-decoration-none fw-semibold stretched-link-target">${act.name || 'Ride'}</a>
-        <small class="text-muted">${date} · ${time}</small>
+        <small class="text-muted">${date} · ${time}${j && j.has_note ? ' · 📝' : ''}</small>
       </div>
       <div class="card-body">
         <div class="row g-3">
           <div class="col-md-4">
             <div class="mini-map rounded border bg-light" id="map-${act.activity_id}" data-id="${act.activity_id}" data-lat="${act.start_lat || ''}" data-lon="${act.start_lon || ''}" style="height:140px;"></div>
           </div>
-          <div class="col-md-8">
+          <div class="col-md-${j && j.first_photo ? 5 : 8}">
             <div class="row g-2 mb-2">
               <div class="col-4"><div class="stat-value">${fmtDistance(act.distance_km)}</div><div class="stat-label">Distance</div></div>
               <div class="col-4"><div class="stat-value">${fmtDuration(act.moving_time_s)}</div><div class="stat-label">Moving time</div></div>
@@ -149,6 +157,7 @@ function renderFeed(activities) {
             <a href="#activity/${act.activity_id}" class="btn btn-sm btn-primary">Open ride</a>
             <button class="btn btn-sm btn-outline-secondary ms-2 download-btn" data-id="${act.activity_id}">Download FIT</button>
           </div>
+          ${photoHtml}
         </div>
       </div>
     `;
