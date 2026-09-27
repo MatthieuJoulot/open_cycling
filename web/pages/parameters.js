@@ -243,7 +243,13 @@ function renderScan(result, container) {
   const chunks = document.getElementById('history-chunks');
   chunks.innerHTML = '';
 
-  // Chunk buttons: next 500, and per-oldest-year groups.
+  // Chunk buttons: next 10 (quick test), next 500, and per-oldest-year groups.
+  const next10 = document.createElement('button');
+  next10.className = 'btn btn-sm btn-outline-primary';
+  next10.textContent = 'Download next 10';
+  next10.addEventListener('click', () => startDownload(10, next10));
+  chunks.appendChild(next10);
+
   const next500 = document.createElement('button');
   next500.className = 'btn btn-sm btn-outline-primary';
   next500.textContent = 'Download next 500';
