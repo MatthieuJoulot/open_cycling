@@ -210,11 +210,11 @@ function setupHistorySection() {
   // Show a download in progress or a recently finished one the user may
   // not have seen (e.g. they were on another page while it ran).
   fetchHistoryDownloadStatus().then(state => {
-    if (state.running) {
+    if (state.running && state.kind === 'history-download') {
       const fakeBtn = document.createElement('button');
       fakeBtn.disabled = true;
       watchDownload(fakeBtn);
-    } else if (state.finished_at && state.result && state.result.ok) {
+    } else if (state.finished_at && state.result && state.result.ok && state.kind === 'history-download') {
       const ageMs = Date.now() - new Date(state.finished_at).getTime();
       if (ageMs < 1000 * 60 * 30) {
         const r = state.result;
