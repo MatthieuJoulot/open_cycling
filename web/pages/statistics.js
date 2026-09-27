@@ -232,7 +232,8 @@ function renderRecords() {
   // dilutes on segments that include flat run-outs).
   const vamCandidates = climbs.filter(o =>
     o.vam && (o.elevation_gain_m || 0) >= 50 && (o.length_m || 0) >= 500);
-  const bestVam = vamCandidates.reduce((acc, o) => (!acc || o.vam > acc.vam) ? { o, v: o.vam } : acc, null);
+  const sortedVam = vamCandidates.slice().sort((a, b) => b.vam - a.vam);
+  const bestVam = sortedVam.length ? { o: sortedVam[0], v: sortedVam[0].vam } : null;
 
   const rows = [
     longest && { label: 'Longest ride', a: longest.a, text: fmtDistance(longest.v) },
