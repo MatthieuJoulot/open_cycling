@@ -47,6 +47,39 @@ export async function renderTraining() {
       </div>
       <div class="col-lg-6">
         <div class="card mb-3">
+          <div class="card-header fw-semibold">Weather correlation</div>
+          <div class="card-body">
+            <div class="row g-2 mb-2">
+              <div class="col-6">
+                <label class="form-label small text-muted">Y axis</label>
+                <select id="weather-y" class="form-select form-select-sm">
+                  <option value="eff" selected>Speed × HR (efficiency)</option>
+                  <option value="speed">Speed</option>
+                  <option value="hr">Heart rate</option>
+                </select>
+              </div>
+              <div class="col-6">
+                <label class="form-label small text-muted">X axis</label>
+                <select id="weather-x" class="form-select form-select-sm">
+                  <option value="tempAlt" selected>Temperature × altitude</option>
+                  <option value="temp">Temperature</option>
+                  <option value="alt">Altitude</option>
+                </select>
+              </div>
+              <div class="col-12">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="weather-regression">
+                  <label class="form-check-label small" for="weather-regression">Regression line + R²</label>
+                </div>
+              </div>
+            </div>
+            <div style="height: 280px;"><canvas id="weather-chart"></canvas></div>
+            <p class="small text-muted mb-0 mt-2" id="weather-note"></p>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-6">
+        <div class="card mb-3">
           <div class="card-header fw-semibold">Goals</div>
           <div class="card-body" id="goals-body"></div>
         </div>
@@ -57,6 +90,7 @@ export async function renderTraining() {
   renderFitness();
   renderCalendar();
   renderYoY();
+  renderWeather();
   renderGoals();
 }
 
@@ -321,6 +355,132 @@ function renderYoY() {
       scales: { x: { stacked: false }, y: { beginAtZero: true, title: { display: true, text: 'Distance (km)' } } },
     },
   });
+}
+
+let weatherChart = null;
+
+function renderWeather() {
+  const canvas = document.getElementById('weather-chart');
+  const note = document.getElementById('weather-note');
+  const ySel = document.getElementById('weather-y');
+  const xSel = document.getElementById('weather-x');
+  const regCheck = document.getElementById('weather-regression');
+  if (!canvas) return;
+
+  const draw = () => {
+    const yMode = ySel ? ySel.value : 'eff';
+    const xMode = xSel ? xSel.value : 'tempAlt';
+    const showReg = regCheck ? regCheck.checked : false;
+
+    const yDefs = {
+      eff:   { value: a => a.avg_speed / a.avg_hr, needs: ['avg_speed', 'avg_hr'], title: 'Speed × HR (km/h per bpm)', fmt: v => v.toFixed(3) },
+      speed: { value: a => a.avg_speed, needs: ['avg_speed'], title: 'Average speed (km/h)', fmt: v => v.toFixed(1) },
+      hr:    { value: a => a.avg_hr, needs: ['avg_hr'], title: 'Average heart rate (bpm)', fmt: v => String(Math.round(v)) },
+    };
+    const xDefs = {
+      tempAlt: { value: a => a.avg_temperature * a.avg_altitude, needs: ['avg_temperature', 'avg_altitude'], title: 'Temperature × altitude (°C·m)', fmt: v => v.toFixed(0) },
+      temp:    { value: a => a.avg_temperature, needs: ['avg_temperature'], title: 'Average temperature (°C)', fmt: v => v.toFixed(1) },
+      alt:     { value: a => a.avg_altitude, needs: ['avg_altitude'], title: 'Average altitude (m)', fmt: v => String(Math.round(v)) },
+    };
+    const Y = yDefs[yMode], X = xDefs[xMode];
+
+    const acts = statsData.activities.filter(a =>
+      [...Y.needs, ...X.needs].every(f => a[f] != null));
+
+    if (!acts.length) {
+      if (weatherChart) { weatherChart.destroy(); weatherChart = null; }
+      note.textContent = 'No rides with the selected sensors.';
+      return;
+    }
+
+    acts.sort((a, b) => X.value(a) - X.value(b));
+    const xs = acts.map(a => X.value(a));
+    const ys = acts.map(a => Y.value(a));
+
+    if (weatherChart) weatherChart.destroy();
+    const datasets = [{
+      label: 'Rides',
+      data: acts.map((a, i) => ({ x: xs[i], y: ys[i] })),
+      backgroundColor: 'rgba(13, 110, 253, 0.6)',
+      pointRadius: 4,
+    }];
+    // Least-squares fit on the actual x values (not index-based).
+    let regression = null;
+    if (showReg && acts.length >= 2) {
+      const n = acts.length;
+      const mx = xs.reduce((s, v) => s + v, 0) / n;
+      const my = ys.reduce((s, v) => s + v, 0) / n;
+      let sxy = 0, sxx = 0, syy = 0;
+      for (let i = 0; i < n; i++) {
+        sxy += (xs[i] - mx) * (ys[i] - my);
+        sxx += (xs[i] - mx) ** 2;
+        syy += (ys[i] - my) ** 2;
+      }
+      if (sxx > 0) {
+        const slope = sxy / sxx;
+        const intercept = my - slope * mx;
+        const xMin = Math.min(...xs), xMax = Math.max(...xs);
+        const r = (sxx && syy) ? sxy / Math.sqrt(sxx * syy) : null;
+        regression = { slope, intercept, r2: r != null ? r * r : null };
+        const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+        datasets.push({
+          label: regression.r2 != null ? `Regression (R² ${regression.r2.toFixed(2)})` : 'Regression',
+          data: [{ x: xMin, y: slope * xMin + intercept }, { x: xMax, y: slope * xMax + intercept }],
+          type: 'line',
+          borderColor: dark ? '#adb5bd' : '#343a40',
+          borderWidth: 3,
+          pointRadius: 0,
+          fill: false,
+        });
+      }
+    }
+    weatherChart = new Chart(canvas, {
+      type: 'scatter',
+      data: { datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: ctx => {
+                const a = acts[ctx.dataIndex];
+                const parts = [];
+                if (a.avg_temperature != null) parts.push(`${a.avg_temperature}°C`);
+                if (a.avg_altitude != null) parts.push(`${Math.round(a.avg_altitude)}m`);
+                parts.push(`${Y.fmt(Y.value(a))} ${yMode === 'eff' ? 'km/h/bpm' : yMode === 'speed' ? 'km/h' : 'bpm'}`);
+                parts.push(fmtDate(a.start_time));
+                return parts.join(' · ');
+              },
+            },
+          },
+        },
+        scales: {
+          x: { title: { display: true, text: X.title } },
+          y: { title: { display: true, text: Y.title }, beginAtZero: false },
+        },
+      },
+    });
+
+    // Pearson correlation, to hint at a trend.
+    const n = acts.length;
+    const mx = xs.reduce((s, v) => s + v, 0) / n;
+    const my = ys.reduce((s, v) => s + v, 0) / n;
+    let num = 0, dx = 0, dy = 0;
+    for (let i = 0; i < n; i++) {
+      num += (xs[i] - mx) * (ys[i] - my);
+      dx += (xs[i] - mx) ** 2;
+      dy += (ys[i] - my) ** 2;
+    }
+    const r = (dx && dy) ? num / Math.sqrt(dx * dy) : null;
+    note.textContent = `${n} rides with the selected sensors` +
+      (r != null ? ` · correlation r = ${r.toFixed(2)}` : '');
+  };
+
+  if (ySel) ySel.addEventListener('change', draw);
+  if (xSel) xSel.addEventListener('change', draw);
+  if (regCheck) regCheck.addEventListener('change', draw);
+  draw();
 }
 
 function renderGoals() {

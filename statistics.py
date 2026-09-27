@@ -185,6 +185,33 @@ def get_stats(connect_db):
         o["elapsed_time_s"] = p.get("elapsed_time_s")
         o["vam"] = p.get("vam")
 
+    # Per-ride average temperature and altitude from records (the
+    # activities.avg_temperature column is mostly a 127 sentinel).
+    # Only plausible readings kept.
+    env_rows = cur.execute(
+        """
+        SELECT r.activity_id,
+               AVG(CASE WHEN r.temperature BETWEEN -20 AND 45
+                        THEN r.temperature END) AS t,
+               AVG(r.altitude) AS alt
+        FROM activity_records r
+        JOIN activities a ON a.activity_id = r.activity_id
+        WHERE a.sport = 'cycling'
+          AND (r.temperature IS NOT NULL OR r.altitude IS NOT NULL)
+        GROUP BY r.activity_id
+        """
+    ).fetchall()
+    ride_temp = {}
+    ride_alt = {}
+    for r in env_rows:
+        if r["t"] is not None:
+            ride_temp[r["activity_id"]] = round(r["t"], 1)
+        if r["alt"] is not None:
+            ride_alt[r["activity_id"]] = round(r["alt"], 0)
+    for d in activities:
+        d["avg_temperature"] = ride_temp.get(d["activity_id"])
+        d["avg_altitude"] = ride_alt.get(d["activity_id"])
+
     # Best efforts: fastest time covering each fixed distance (rolling
     # window over each ride's distance/timestamp records). Cached.
     efforts = _best_efforts(cur, activities, EFFORT_DISTANCES_M)
