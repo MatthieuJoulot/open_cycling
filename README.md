@@ -59,6 +59,8 @@ Then download and import your activities:
 ~/garmindb-venv/bin/garmindb_cli.py --download --import --activities
 ```
 
+This fetches the **1000 most recent** activities (GarminDB's default `download_all_activities` cap). If your history goes back further, download the rest from the app: Parameters → **Download history** → *Scan Garmin Connect* shows what is missing and offers chunked downloads (by year, by 500, or everything) that run in the background.
+
 ### 2. Configure this app
 
 Start the server and configure from the UI — no file editing needed:
@@ -111,7 +113,7 @@ If you already ran the app elsewhere (or want a friend's curated cols list), the
 
 ## First sync and later syncs
 
-Both work the same way: click **"Sync new activities"** in the left sidebar.
+Both work the same way: click **"Sync new activities"** in the left sidebar — it only fetches the latest activities (`--latest`). For anything older, use the chunked history downloads on the Parameters page.
 
 The button:
 

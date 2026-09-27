@@ -181,3 +181,31 @@ export async function importFiles(payload) {
   }
   return res.json();
 }
+
+export async function scanHistory() {
+  const res = await fetch(`${BASE}/api/history/scan`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to start history scan');
+  return res.json();
+}
+
+export async function fetchHistoryScanStatus() {
+  const res = await fetch(`${BASE}/api/history/scan/status`);
+  if (!res.ok) throw new Error('Failed to get history scan status');
+  return res.json();
+}
+
+export async function downloadHistory(count) {
+  const res = await fetch(`${BASE}/api/history/download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ count }),
+  });
+  if (!res.ok) throw new Error('Failed to start history download');
+  return res.json();
+}
+
+export async function fetchHistoryDownloadStatus() {
+  const res = await fetch(`${BASE}/api/history/download/status`);
+  if (!res.ok) throw new Error('Failed to get history download status');
+  return res.json();
+}

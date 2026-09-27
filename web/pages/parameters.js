@@ -1,4 +1,4 @@
-import { fetchConfig, saveConfig, importFiles } from '../utils/api.js';
+import { fetchConfig, saveConfig, importFiles, scanHistory, fetchHistoryScanStatus, downloadHistory, fetchHistoryDownloadStatus } from '../utils/api.js';
 
 export async function renderParameters() {
   const app = document.getElementById('app');
@@ -57,6 +57,23 @@ export async function renderParameters() {
               <span id="config-saved-msg" class="text-success small ms-2 d-none">Saved ✓ — restart the server if you changed paths or the CLI.</span>
             </div>
           </form>
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-header fw-semibold">Download history</div>
+        <div class="card-body">
+          <p class="small text-muted mb-2">
+            The initial setup only downloads the 1000 most recent activities.
+            Scan your Garmin Connect account to see what else is available, then download it in chunks.
+          </p>
+          <button class="btn btn-sm btn-outline-primary" id="history-scan-btn">Scan Garmin Connect</button>
+          <span id="history-scan-status" class="small ms-2 text-muted"></span>
+          <div id="history-scan-result" class="mt-2 d-none">
+            <div id="history-summary" class="small mb-2"></div>
+            <div id="history-chunks" class="d-flex flex-wrap gap-2"></div>
+            <div id="history-download-status" class="small mt-2"></div>
+          </div>
         </div>
       </div>
 
@@ -157,6 +174,131 @@ export async function renderParameters() {
       btn.disabled = false;
       btn.textContent = 'Import';
     }
+  });
+
+  setupHistorySection();
+}
+
+function setupHistorySection() {
+  const scanBtn = document.getElementById('history-scan-btn');
+  const scanStatus = document.getElementById('history-scan-status');
+  const scanResult = document.getElementById('history-scan-result');
+  if (!scanBtn) return;
+
+  scanBtn.addEventListener('click', async () => {
+    scanBtn.disabled = true;
+    scanStatus.textContent = 'Scanning…';
+    try {
+      await scanHistory();
+      pollScan(scanBtn, scanStatus, scanResult);
+    } catch (err) {
+      scanStatus.textContent = err.message || 'Scan failed';
+      scanBtn.disabled = false;
+    }
+  });
+
+  // Show a previous scan if one exists.
+  fetchHistoryScanStatus().then(state => {
+    if (state.scanning) {
+      scanBtn.disabled = true;
+      pollScan(scanBtn, scanStatus, scanResult);
+    } else if (state.scan_result) {
+      renderScan(state.scan_result, scanResult);
+    }
+  }).catch(() => {});
+}
+
+function pollScan(scanBtn, scanStatus, scanResult) {
+  const timer = setInterval(async () => {
+    try {
+      const state = await fetchHistoryScanStatus();
+      if (state.scanning) return;
+      clearInterval(timer);
+      scanBtn.disabled = false;
+      if (state.scan_error) {
+        scanStatus.textContent = 'Scan failed: ' + state.scan_error;
+        scanStatus.className = 'small ms-2 text-danger';
+      } else if (state.scan_result) {
+        scanStatus.textContent = '';
+        renderScan(state.scan_result, scanResult);
+      }
+    } catch (e) { /* keep polling */ }
+  }, 1000);
+}
+
+function renderScan(result, container) {
+  container.classList.remove('d-none');
+  const missing = result.missing || 0;
+  if (missing === 0) {
+    document.getElementById('history-summary').textContent =
+      `All ${result.total} activities are downloaded (oldest: ${result.oldest || '?'}). Nothing to fetch.`;
+    document.getElementById('history-chunks').innerHTML = '';
+    return;
+  }
+  const byYear = result.missing_by_year || {};
+  const oldestYear = Object.keys(byYear).sort()[0];
+  document.getElementById('history-summary').textContent =
+    `${result.total} activities on Garmin Connect (${result.oldest || '?'} → today) · ${result.local} already downloaded · ${missing} missing.`;
+
+  const chunks = document.getElementById('history-chunks');
+  chunks.innerHTML = '';
+
+  // Chunk buttons: next 500, and per-oldest-year groups.
+  const next500 = document.createElement('button');
+  next500.className = 'btn btn-sm btn-outline-primary';
+  next500.textContent = 'Download next 500';
+  next500.addEventListener('click', () => startDownload(500, next500));
+  chunks.appendChild(next500);
+
+  let cumulative = 0;
+  const years = Object.keys(byYear).sort(); // oldest first
+  for (const year of years) {
+    cumulative += byYear[year];
+    if (cumulative === 0) continue;
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-sm btn-outline-secondary';
+    btn.textContent = `Download through ${year} (+${cumulative})`;
+    btn.addEventListener('click', () => startDownload(cumulative, btn));
+    chunks.appendChild(btn);
+    if (cumulative >= missing) break;
+  }
+
+  const all = document.createElement('button');
+  all.className = 'btn btn-sm btn-outline-danger';
+  all.textContent = `Download everything (${missing})`;
+  all.addEventListener('click', () => startDownload(missing, all));
+  chunks.appendChild(all);
+}
+
+function startDownload(count, btn) {
+  const status = document.getElementById('history-download-status');
+  btn.disabled = true;
+  status.textContent = 'Download started…';
+  status.className = 'small mt-2 text-muted';
+  downloadHistory(count).then(() => {
+    const timer = setInterval(async () => {
+      try {
+        const state = await fetchHistoryDownloadStatus();
+        if (state.running) {
+          status.textContent = 'Downloading… ' + (state.last_log ? state.last_log[state.last_log.length - 1] : '');
+          return;
+        }
+        clearInterval(timer);
+        btn.disabled = false;
+        if (state.error) {
+          status.textContent = 'Download failed: ' + state.error;
+          status.className = 'small mt-2 text-danger';
+        } else {
+          const r = state.result || {};
+          status.textContent = `Done — ${r.new_activities || 0} new activities, ${r.new_climbs || 0} new climbs.`;
+          status.className = 'small mt-2 text-success';
+        }
+      } catch (e) { /* keep polling */ }
+    }, 2000);
+  }).catch(err => {
+    status.textContent = err.message || 'Failed to start download';
+    status.className = 'small mt-2 text-danger';
+    btn.disabled = false;
   });
 }
 
