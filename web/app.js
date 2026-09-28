@@ -9,12 +9,15 @@ import { renderParameters } from './pages/parameters.js';
 import { renderStatistics } from './pages/statistics.js';
 import { renderTraining } from './pages/training.js';
 import { renderExplore, renderClimbDbDetail } from './pages/explore.js';
+import { renderFlyover } from './pages/flyover.js';
 import { applyTheme } from './utils/theme.js';
+import { rememberListPage } from './components/nav.js';
 
 applyTheme(document.documentElement.getAttribute('data-bs-theme') || 'light');
 
 function route() {
   const hash = location.hash.replace(/^#/, '') || 'feed';
+  rememberListPage(hash);
   const loading = document.getElementById('loading');
   loading.classList.remove('d-none');
 
@@ -90,6 +93,14 @@ function route() {
       await renderExplore();
       renderClimbDbDetail(ex[1]);
     })().finally(() => loading.classList.add('d-none'));
+    return;
+  }
+
+  const fo = hash.match(/^flyover\/(.+)$/);
+  if (fo) {
+    renderNav(true);
+    hideSidebar();
+    renderFlyover(fo[1]).finally(() => loading.classList.add('d-none'));
     return;
   }
 

@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Flyover frame renderer</title>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  #map { position: absolute; inset: 0; }
+  #status { position: absolute; top: 4px; left: 4px; z-index: 10;
+    color: #fff; font: 12px monospace; text-shadow: 0 1px 3px #000; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="status">loading</div>
+<script>
+// Standalone page used only by the headless server-side video render
+// (render_flyover.py drives it through playwright). Plain JS on purpose:
+// no build step, no imports, loaded straight from the local server.
+//
+// Protocol (window.*):
+//   ready            -> bool, set once map + data are loaded
+//   error            -> string, set on failure
+//   totalM           -> ride length in metres
+//   renderFrame(f, frames) -> Promise<dataURL jpeg>. Camera is placed at
+//      posM = totalM * f / (frames-1), map waits for idle, POI labels are
+//      drawn onto a 2D canvas overlay, result returned as a JPEG.
+
+const activityId = new URLSearchParams(location.search).get('id');
+const statusEl = document.getElementById('status');
+
+let map = null;
+let track = [];
+let cum = [0];
+let totalM = 0;
+let pois = null;
+window.ready = false;
+window.error = null;
+window.totalM = 0;
+
+const D2R = Math.PI / 180;
+const R = 6371000;
+
+function setStatus(s) { statusEl.textContent = s; }
+
+async function load() {
+  try {
+    const [tRes, pRes] = await Promise.all([
+      fetch(`/api/activity/${activityId}/flyover`),
+      fetch(`/api/activity/${activityId}/flyover-pois`),
+    ]);
+    const data = await tRes.json();
+    pois = await pRes.json();
+    track = (data.points || []).map(p => [p[0], p[1], p[2]]);
+    if (track.length < 2) throw new Error('no GPS track');
+    for (let i = 1; i < track.length; i++) {
+      const [la1, lo1] = track[i - 1], [la2, lo2] = track[i];
+      const x = (la2 - la1) * D2R, y = (lo2 - lo1) * D2R * Math.cos((la1 + la2) / 2 * D2R);
+      cum.push(cum[i - 1] + Math.hypot(x, y) * R);
+    }
+    totalM = cum[cum.length - 1];
+    window.totalM = totalM;
+    camTrack = buildCamTrack(600);
+
+    map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        version: 8,
+        sources: {
+          map: {
+            type: 'raster',
+            tiles: [location.origin + '/tiles/esri/{z}/{y}/{x}'],
+            tileSize: 256,
+            attribution: '',
+          },
+          dem: {
+            type: 'raster-dem',
+            tiles: [location.origin + '/tiles/terrarium/{z}/{x}/{y}'],
+            encoding: 'terrarium',
+            tileSize: 256,
+            maxzoom: 13,
+          },
+        },
+        layers: [{ id: 'base', type: 'raster', source: 'map' }],
+      },
+      center: [track[0][1], track[0][0]],
+      zoom: 13,
+      pitch: 55,
+      bearing: 0,
+      maxPitch: 80,
+      attributionControl: false,
+    });
+    map.on('error', e => console.warn('maplibre:', e && e.error && e.error.message));
+    await new Promise((res, rej) => {
+      map.on('load', res);
+      map.on('error', rej);
+    });
+    map.setTerrain({ source: 'dem', exaggeration: 1.2 });
+    map.addSource('track', {
+      type: 'geojson',
+      data: {
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: track.slice(0, 2).map(p => [p[1], p[0], p[2] || 0]),
+        },
+      },
+    });
+    map.addLayer({
+      id: 'track-line',
+      type: 'line',
+      source: 'track',
+      paint: { 'line-color': '#ffd700', 'line-width': 4 },
+    });
+    // TDF-style start/end flags.
+    map.addSource('ends', {
+      type: 'geojson',
+      data: {
+        type: 'FeatureCollection',
+        features: [
+          { type: 'Feature', properties: { kind: 'start' },
+            geometry: { type: 'Point', coordinates: [track[0][1], track[0][0]] } },
+          { type: 'Feature', properties: { kind: 'end' },
+            geometry: { type: 'Point', coordinates: [track[track.length - 1][1], track[track.length - 1][0]] } },
+        ],
+      },
+    });
+    map.addLayer({
+      id: 'ends-bg',
+      type: 'circle',
+      source: 'ends',
+      paint: {
+        'circle-radius': 8,
+        'circle-color': '#fff',
+        'circle-stroke-width': 2.5,
+        'circle-stroke-color': ['match', ['get', 'kind'], 'start', '#28a745', '#dc3545'],
+      },
+    });
+    map.addLayer({
+      id: 'ends-dot',
+      type: 'circle',
+      source: 'ends',
+      paint: {
+        'circle-radius': 3.5,
+        'circle-color': ['match', ['get', 'kind'], 'start', '#28a745', '#dc3545'],
+      },
+    });
+    window.ready = true;
+    setStatus('ready');
+  } catch (err) {
+    window.error = String(err && err.message || err);
+    setStatus('error: ' + window.error);
+  }
+}
+
+const indexAt = (m) => {
+  let lo = 0, hi = cum.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cum[mid] < m) lo = mid + 1; else hi = mid;
+  }
+  const i = Math.max(1, lo);
+  const seg = cum[i] - cum[i - 1] || 1;
+  return (i - 1) + (m - cum[i - 1]) / seg;
+};
+
+const lerpPos = (i) => {
+  const f = i - Math.floor(i);
+  const a = track[Math.floor(i)], b = track[Math.min(track.length - 1, Math.floor(i) + 1)];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f,
+          (a[2] || 0) + ((b[2] || 0) - (a[2] || 0)) * f];
+};
+
+// Blurred camera path (gaussian, sigma in metres): the camera walks
+// this while the yellow line stays on the real track, so switchbacks
+// move the line across the frame instead of dragging the camera.
+const buildCamTrack = (sigmaM) => {
+  const out = new Array(track.length);
+  const inv2s2 = 1 / (2 * sigmaM * sigmaM);
+  for (let i = 0; i < track.length; i++) {
+    let lo = i, hi = i;
+    while (lo > 0 && cum[i] - cum[lo] < 3 * sigmaM) lo--;
+    while (hi < track.length - 1 && cum[hi] - cum[i] < 3 * sigmaM) hi++;
+    let wSum = 0, la = 0, lo2 = 0, al = 0;
+    for (let j = lo; j <= hi; j++) {
+      const d = cum[j] - cum[i];
+      const w = Math.exp(-d * d * inv2s2);
+      wSum += w;
+      la += track[j][0] * w; lo2 += track[j][1] * w;
+      al += (track[j][2] || 0) * w;
+    }
+    out[i] = [la / wSum, lo2 / wSum, al / wSum];
+  }
+  return out;
+};
+let camTrack = null;
+const camLerpPos = (i) => {
+  const f = i - Math.floor(i);
+  const a = camTrack[Math.floor(i)], b = camTrack[Math.min(camTrack.length - 1, Math.floor(i) + 1)];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+};
+
+function bearingDeg(a, b) {
+  const dy = (b[0] - a[0]) * D2R;
+  const dx = (b[1] - a[1]) * D2R * Math.cos((a[0] + b[0]) / 2 * D2R);
+  return (Math.atan2(dx, dy) / D2R + 360) % 360;
+}
+
+let smoothBearing = null;
+
+function updateCamera(posM) {
+  const i = indexAt(posM);
+  const cam = camLerpPos(i);
+  // 10-30 km look-ahead kernel, clamped to ride length.
+  const lookAhead = Math.min(Math.max(10000, 250), Math.min(30000, totalM));
+  const ahead = camLerpPos(Math.min(track.length - 1, indexAt(posM + lookAhead)));
+  const target = bearingDeg(cam, ahead);
+  if (smoothBearing == null) smoothBearing = target;
+  else {
+    let d = ((target - smoothBearing + 540) % 360) - 180;
+    if (Math.abs(d) > 3) smoothBearing = (smoothBearing + d * 0.04 + 360) % 360;
+  }
+  map.jumpTo({ center: [cam[1], cam[0], cam[2] + 60], bearing: smoothBearing, pitch: 55 });
+  const src = map.getSource('track');
+  const upto = Math.floor(i) + 1;
+  const want = Math.min(track.length, upto + 1);
+  if (src._data.geometry.coordinates.length !== want) {
+    src.setData({
+      type: 'Feature',
+      geometry: {
+        type: 'LineString',
+        coordinates: track.slice(0, want)
+          .map(p => [p[1], p[0], p[2] || 0]),
+      },
+    });
+  }
+  return cam;
+}
+
+function waitForIdle(ms) {
+  return new Promise(resolve => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      map.off('idle', finish);
+      resolve();
+    };
+    map.once('idle', finish);
+    setTimeout(finish, ms || 8000);
+  });
+}
+
+// Draw POI labels + HUD onto a canvas that sits on top of the map, then
+// compose map canvas + overlay into one JPEG. Doing this in-canvas (not
+// DOM) is what makes the headless render self-contained.
+function drawOverlay(cam, posM, showLabels, finished) {
+  const canvas = map.getCanvas();
+  const w = canvas.width, h = canvas.height;
+  const overlay = window._overlay;
+  overlay.width = w; overlay.height = h;
+  const ctx = overlay.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+
+  // --- POI labels ---
+  if (showLabels && pois) {
+    const items = [
+      ...(pois.cities || []).map(c => ({ name: c.name, lat: c.lat, lon: c.lon, kind: c.kind, alt: c.alt })),
+      ...(pois.summits || []).map(s => ({ name: '⛰ ' + s.name, lat: s.lat, lon: s.lon, kind: 'summit', alt: s.alt })),
+    ];
+    const size = map.getContainer().getBoundingClientRect();
+    ctx.textAlign = 'center';
+    ctx.font = '600 13px system-ui, sans-serif';
+    for (const it of items) {
+      const p = map.project([it.lon, it.lat]);
+      const x = p.x, y = p.y;
+      if (x < -200 || x > size.width + 200 || y < -200 || y > size.height + 200) continue;
+      const color = it.kind === 'summit' ? '#ffd700' : '#e9ecef';
+      ctx.shadowColor = 'rgba(0,0,0,.9)';
+      ctx.shadowBlur = 4;
+      ctx.fillStyle = color;
+      ctx.fillText(it.name, x, y - 26);
+      if (it.alt != null) {
+        ctx.font = '11px system-ui, sans-serif';
+        ctx.fillText(Math.round(it.alt) + ' m', x, y - 12);
+        ctx.font = '600 13px system-ui, sans-serif';
+      }
+      ctx.font = '14px system-ui, sans-serif';
+      ctx.fillText('▼', x, y - 2);
+      ctx.font = '600 13px system-ui, sans-serif';
+    }
+  }
+
+  // --- HUD ---
+  ctx.shadowBlur = 6;
+  const pad = 8, bw = 250, bh = 30;
+  ctx.fillStyle = 'rgba(0,0,0,.6)';
+  ctx.fillRect(pad, pad, bw, bh);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'left';
+  ctx.font = '12px system-ui, sans-serif';
+  const km = (posM / 1000).toFixed(1) + ' km';
+  const alt = (cam && cam[2] != null) ? Math.round(cam[2]) + ' m' : '—';
+  ctx.fillText(km, pad + 10, pad + 20);
+  ctx.fillText(alt, pad + 100, pad + 20);
+  const pct = totalM ? Math.round(posM / totalM * 100) + '%' : '';
+  ctx.fillText(finished ? '🏁' : pct, pad + 180, pad + 20);
+  ctx.textAlign = 'center';
+}
+
+// Ride frames: camera walks the track. Finale frames: smooth zoom-out to
+// the whole route (ease-out), like a drone pulling away at the finish.
+const FINALE_S = 5;
+const FINALE_FPS = 24;
+
+window.finale = null;  // computed once: {bounds, cam}
+
+function computeFinale() {
+  const lats = track.map(p => p[0]), lons = track.map(p => p[1]);
+  const bounds = [[Math.min(...lons), Math.min(...lats)],
+                  [Math.max(...lons), Math.max(...lats)]];
+  const cur = {
+    center: map.getCenter(),
+    zoom: map.getZoom(),
+    pitch: map.getPitch(),
+    bearing: map.getBearing(),
+  };
+  // maplibre's own fitBounds math: exact zoom/center that fits the track
+  // with padding, accounting for pitch. duration 0 -> instant, we read
+  // the resulting camera and restore.
+  map.fitBounds(bounds, {
+    padding: 80,
+    pitch: 30,
+    bearing: cur.bearing,
+    duration: 0,
+  });
+  window.finale = {
+    cam: {
+      center: map.getCenter(),
+      zoom: map.getZoom(),
+      pitch: map.getPitch(),
+      bearing: cur.bearing,
+    },
+    from: cur,
+  };
+  map.jumpTo(cur);
+}
+
+window.renderRideFrame = async function (f, frames, idleMs) {
+  const posM = (totalM * f) / (frames - 1);
+  const cam = updateCamera(posM);
+  if (f === frames - 1) computeFinale();
+  await waitForIdle(idleMs);
+  drawOverlay(cam, posM, f === frames - 1 ? 0 : 1, false);
+  return composeJpeg();
+};
+
+window.renderFinaleFrame = async function (f, frames, idleMs) {
+  const e = 1 - Math.pow(1 - Math.min(1, f / (frames - 1)), 3);
+  const fin = window.finale, from = fin.from, to = fin.cam;
+  map.jumpTo({
+    center: [
+      from.center.lng + (to.center.lng - from.center.lng) * e,
+      from.center.lat + (to.center.lat - from.center.lat) * e,
+    ],
+    zoom: from.zoom + (to.zoom - from.zoom) * e,
+    pitch: from.pitch + (to.pitch - from.pitch) * e,
+    bearing: from.bearing,
+  });
+  await waitForIdle(idleMs);
+  // No POI labels during the finale: projections go wild at low zoom.
+  drawOverlay(null, totalM, 1, true);
+  return composeJpeg();
+};
+
+function composeJpeg() {
+  const mc = map.getCanvas();
+  const off = document.createElement('canvas');
+  off.width = mc.width; off.height = mc.height;
+  const ctx = off.getContext('2d');
+  ctx.drawImage(mc, 0, 0);
+  ctx.drawImage(window._overlay, 0, 0);
+  return off.toDataURL('image/jpeg', 0.85);
+}
+
+// Overlay canvas kept off-DOM; drawOverlay sizes it to the map canvas.
+window._overlay = document.createElement('canvas');
+
+load();
+</script>
+</body>
+</html>

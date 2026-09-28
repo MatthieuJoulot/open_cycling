@@ -7,9 +7,11 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
+import uuid
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -51,11 +53,18 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    # Paces upstream tile fetches (Esri rate-limits bursts with useless
+    # "map data not available" placeholder tiles).
+    TILE_FETCH_SEM = threading.Semaphore(4)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
 
+        if path.startswith("/tiles/"):
+            self._serve_tile(path)
+            return
         if path == "/api/sync/status":
             self._send_json(json.dumps(get_sync_status()))
             return
@@ -150,6 +159,47 @@ class Handler(SimpleHTTPRequestHandler):
             activity_id = path.split("/")[-2]
             self._send_json(json.dumps(get_track(activity_id)))
             return
+        if path.startswith("/api/activity/") and path.endswith("/flyover"):
+            activity_id = path.split("/")[-2]
+            self._send_json(json.dumps(get_flyover_track(activity_id)))
+            return
+        if path.startswith("/api/activity/") and path.endswith("/flyover-pois"):
+            activity_id = path.split("/")[-2]
+            self._send_json(json.dumps(get_flyover_pois(activity_id)))
+            return
+        if path.startswith("/api/flyover-render/"):
+            parts = [p for p in path.split("/") if p]
+            if len(parts) == 3 and parts[2] == "new" and self.command == "POST":
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                render_id = flyover_render_start(
+                    body.get("activity_id"),
+                    seconds=int(body.get("seconds", 60)),
+                    width=int(body.get("width", 1280)),
+                    height=int(body.get("height", 800)))
+                prune_render_jobs(keep_id=render_id)
+                self._send_json(json.dumps({"id": render_id}))
+                return
+            render_id = parts[2]
+            action = parts[3] if len(parts) > 3 else ""
+            if action == "video":
+                job = RENDER_JOBS.get(render_id)
+                out = job["dir"] / "out.mp4" if job else None
+                if not job or job["status"] != "done" or not out or not out.exists():
+                    self._send_json_status(json.dumps({"error": "not ready"}), 404)
+                    return
+                data = out.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Content-Disposition",
+                                 f'attachment; filename="flyover_{render_id}.mp4"')
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            result = flyover_render_status(render_id)
+            self._send_json(json.dumps(result))
+            return
         if path.startswith("/api/activity/") and path.endswith("/details"):
             activity_id = path.split("/")[-2]
             self._send_json(json.dumps(get_activity_details(activity_id)))
@@ -242,6 +292,22 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path.startswith("/api/flyover-render/"):
+            parts = [p for p in path.split("/") if p]
+            if len(parts) == 3 and parts[2] == "new":
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                render_id = flyover_render_start(
+                    body.get("activity_id"),
+                    seconds=int(body.get("seconds", 60)),
+                    width=int(body.get("width", 1280)),
+                    height=int(body.get("height", 800)))
+                prune_render_jobs(keep_id=render_id)
+                self._send_json(json.dumps({"id": render_id}))
+                return
+            self._send_json_status(json.dumps({"error": "bad render action"}), 404)
+            return
 
         if path.startswith("/api/activity/") and path.endswith("/journal"):
             activity_id = path.split("/")[-2]
@@ -479,6 +545,99 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_json_status(self, body, status):
+        data = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    # --- Tile cache proxy ------------------------------------------------
+    # The flyover renders (live page and headless video) hammer the Esri
+    # imagery + terrarium DEM tile servers. This proxy caches every tile
+    # on disk so repeat renders are local-only: dramatically faster
+    # headless renders and a much snappier live page.
+
+    def _serve_tile(self, path):
+        # /tiles/<source>/<z>/<a>/<b> where a/b order differs by source:
+        # esri URLs are built with maplibre's {z}/{y}/{x} and terrarium
+        # with {z}/{x}/{y}, so each upstream gets its own parse order.
+        parts = [p for p in path.split("/") if p]  # tiles, src, z, a, b
+        src, z, a, b = parts[1], parts[2], parts[3], parts[4].split(".")[0]
+        if src == "esri":
+            y, x = a, b
+        else:
+            x, y = a, b
+        UPSTREAMS = {
+            "esri": ("https://server.arcgisonline.com/ArcGIS/rest/services/"
+                     "World_Imagery/MapServer/tile/{z}/{y}/{x}", "image/jpeg"),
+            "terrarium": ("https://s3.amazonaws.com/elevation-tiles-prod/"
+                          "terrarium/{z}/{x}/{y}.png", "image/png"),
+        }
+        if src not in UPSTREAMS:
+            self.send_error(404, "unknown tile source")
+            return
+        url_tpl, ctype = UPSTREAMS[src]
+        url = url_tpl.format(z=z, x=x, y=y)
+        cache_dir = APP_ROOT / "cache" / "tiles" / src / z / x
+        cache_file = cache_dir / f"{y}"
+        if cache_file.exists():
+            data = cache_file.read_bytes()
+        else:
+            data = self._fetch_tile(url, src)
+            if data is None:
+                self.send_error(502, "tile fetch failed")
+                return
+            try:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                cache_file.write_bytes(data)
+            except Exception:
+                pass
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "max-age=604800")
+        self.end_headers()
+        self.wfile.write(data)
+
+    @staticmethod
+    def _fetch_tile(url, src):
+        """Fetch a tile upstream, retrying once. Returns None on failure.
+
+        Esri answers rate-limit bursts with a solid-colour "map data not
+        available" JPEG instead of an error, so single-colour images are
+        rejected (and retried) — otherwise the placeholder would get
+        cached and poison every future render. A semaphore paces the
+        upstream requests so bursts from the map renderer don't trip the
+        rate limit in the first place.
+        """
+        import urllib.request
+        with Handler.TILE_FETCH_SEM:
+            for attempt in range(3):
+                try:
+                    req = urllib.request.Request(url, headers={"User-Agent": "climb-analyzer/1.0"})
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        data = resp.read()
+                    if src == "esri":
+                        import io
+                        try:
+                            from PIL import Image
+                            im = Image.open(io.BytesIO(data)).convert("RGB")
+                            if len(im.getcolors(65536) or []) <= 2:
+                                raise ValueError("placeholder tile")
+                        except ValueError:
+                            time.sleep(2.0 * (attempt + 1))
+                            continue
+                        except Exception:
+                            pass  # PIL missing or weird tile: accept as-is
+                    return data
+                except Exception:
+                    if attempt == 2:
+                        return None
+                    time.sleep(1.0)
+        return None
+
     def _serve_fit_file(self, activity_id):
         fit_path = config.FIT_DIR / f"{activity_id}_ACTIVITY.fit"
         if not fit_path.exists():
@@ -574,6 +733,342 @@ def _decimate_track(pts):
     if step > 1 and (len(out) == 0 or out[-1] != [round(last[0], 5), round(last[1], 5)]):
         out.append([round(last[0], 5), round(last[1], 5)])
     return out
+
+
+FLYOVER_CACHE = APP_ROOT / "cache"
+FLYOVER_STEP_M = 15.0          # resample the track at fixed spacing
+
+
+POI_CACHE = APP_ROOT / "cache"
+POI_CORRIDOR_M = 3000.0
+RENDER_DIR = Path(tempfile.gettempdir()) / "flyover_renders"
+RENDER_FPS = 24
+
+
+def get_flyover_pois(activity_id):
+    """Points of interest along a ride for the 3D flyover.
+
+    Cities/towns/villages near the route (one Overpass query, cached) and
+    the ride's validated-climb summits. Returns {cities: [...],
+    summits: [{name, lat, lon, alt, startM, endM}]}.
+    """
+    cache_file = POI_CACHE / f"flyover_pois_{activity_id}.json"
+    # Cache is invalidated when climbs or validated names change on disk,
+    # so newly validated climbs show up without deleting the cache by hand.
+    # Schema version: bump when the payload shape changes (e.g. alt added).
+    try:
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        if (data.get("summits") or [{}])[0].get("alt") is not None:
+            cache_mtime = cache_file.stat().st_mtime
+            source_mtime = max(
+                CLIMBS_JSON.stat().st_mtime,
+                (APP_ROOT / "validated_climbs.json").stat().st_mtime,
+                (APP_ROOT / "climb_segments.json").stat().st_mtime,
+            )
+            if cache_mtime >= source_mtime:
+                return data
+    except Exception:
+        pass
+
+    conn = _connect_db()
+    rows = []
+    if conn is not None:
+        rows = conn.execute(
+            """
+            SELECT position_lat, position_long, altitude FROM activity_records
+            WHERE activity_id = ? AND position_lat IS NOT NULL
+              AND position_long IS NOT NULL
+            ORDER BY record
+            """,
+            (activity_id,),
+        ).fetchall()
+    if not rows:
+        return {"cities": [], "summits": []}
+
+    lats = [r["position_lat"] for r in rows]
+    lons = [r["position_long"] for r in rows]
+    # Pad the bbox by the corridor margin so places just outside the
+    # route's bounding box (e.g. the arrival city) are still found.
+    pad = POI_CORRIDOR_M / 111320.0
+    lat_min, lat_max = min(lats) - pad, max(lats) + pad
+    lon_min, lon_max = min(lons) - pad / math.cos(min(lats) * math.pi / 180), max(lons) + pad / math.cos(min(lats) * math.pi / 180)
+
+    q = f"""
+    [out:json][timeout:60];
+    node["place"~"^(city|town|village|hamlet)$"]["name"]({lat_min},{lon_min},{lat_max},{lon_max});
+    out 300;
+    """
+    result = osm_lookup._overpass(q)
+
+    def _close_to_track(lat, lon):
+        # Corridor check: sample every ~20th GPS point (fast enough).
+        for r in rows[::20]:
+            dx = (r["position_long"] - lon) * math.cos(lat * math.pi / 180)
+            dy = r["position_lat"] - lat
+            if math.hypot(dx, dy) * 111320 <= POI_CORRIDOR_M:
+                return True
+        return False
+
+    cities = []
+    for el in result.get("elements", []):
+        lat, lon = el.get("lat"), el.get("lon")
+        if lat is None or lon is None:
+            continue
+        if not _close_to_track(lat, lon):
+            continue
+        name = el.get("tags", {}).get("name")
+        place = el.get("tags", {}).get("place")
+        if not name:
+            continue
+        cities.append({"name": name, "kind": place, "lat": lat, "lon": lon})
+
+    # Summits: validated climbs from climbs.json with coordinates.
+    summits = []
+    try:
+        data = json.loads(CLIMBS_JSON.read_text(encoding="utf-8"))
+    except Exception:
+        data = {"activities": []}
+    validated = validated_store.get_validated_list()
+    for act in data.get("activities", []):
+        if str(act.get("activity_id")) != str(activity_id):
+            continue
+        for c in segment_store.apply_overrides(activity_id, act.get("climbs", [])):
+            name = None
+            for v in validated:
+                if climb_groups.climbs_match(v, c):
+                    name = v["name"]
+                    break
+            if not name or c.get("end_lat") is None:
+                continue
+            summits.append({
+                "name": name,
+                "lat": c["end_lat"], "lon": c["end_lon"],
+                "startM": c.get("start_distance_m"),
+                "endM": c.get("end_distance_m"),
+            })
+        break
+
+    # Only the start and end city labels are shown in the flyover: pick
+    # the place nearest to the first and to the last GPS point.
+    def nearest_place(lat, lon):
+        best, best_d = None, None
+        for c in cities:
+            dx = (c["lon"] - lon) * math.cos(lat * math.pi / 180)
+            dy = c["lat"] - lat
+            d = math.hypot(dx, dy) * 111320
+            if best_d is None or d < best_d:
+                best, best_d = c, d
+        return best
+
+    start_place = nearest_place(rows[0]["position_lat"], rows[0]["position_long"])
+    end_place = nearest_place(rows[-1]["position_lat"], rows[-1]["position_long"])
+    kept = []
+    seen_names = set()
+    for place, where in ((start_place, "start"), (end_place, "end")):
+        if place and place["name"] not in seen_names:
+            c = dict(place)
+            c["where"] = where
+            kept.append(c)
+            seen_names.add(place["name"])
+    # Strip " depuis X" / " from X" / " - X" from summit labels: show the
+    # col name only. Altitudes come from the track's altitude channel
+    # (max inside the climb, nearest point for cities) — more reliable
+    # than terrain queries at render time.
+    def alt_near(lat, lon):
+        best, best_d = None, None
+        for r in rows[::5]:
+            if r["altitude"] is None:
+                continue
+            dx = (r["position_long"] - lon) * math.cos(lat * math.pi / 180)
+            dy = r["position_lat"] - lat
+            d = math.hypot(dx, dy) * 111320
+            if best_d is None or d < best_d:
+                best, best_d = r["altitude"], d
+        return round(best) if best is not None else None
+
+    for sm in summits:
+        sm["name"] = re.split(r"\s+depuis\s+|\s+from\s+|\s+-\s+", sm["name"], maxsplit=1)[0].strip()
+        sm["alt"] = alt_near(sm["lat"], sm["lon"])
+    for c in kept:
+        c["alt"] = alt_near(c["lat"], c["lon"])
+
+    payload = {"cities": kept, "summits": summits}
+    try:
+        POI_CACHE.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    return payload
+
+
+# --- Flyover offline video render -------------------------------------
+# Rendering is fully server-side: serve.py spawns headless Chrome
+# (playwright, channel="chrome"), which loads web/render/flyover_frame.html,
+# walks the camera frame by frame and assembles an MP4 with ffmpeg. The
+# user clicks "Download video", gets a job id and polls until done —
+# nothing to watch, tab can be closed, video is always smooth 24 fps.
+
+RENDER_JOBS = {}  # render_id -> {dir, status, frame, total, video, error, born}
+RENDER_TTL = 3600
+
+
+def flyover_render_start(activity_id, seconds=60, width=1280, height=800):
+    render_id = uuid.uuid4().hex[:12]
+    RENDER_JOBS[render_id] = {
+        "id": render_id, "activity_id": activity_id,
+        "dir": RENDER_DIR / render_id,
+        "status": "starting", "frame": 0, "total": 0,
+        "video": None, "error": None, "born": time.time(),
+    }
+
+    def run():
+        job = RENDER_JOBS[render_id]
+        try:
+            import render_flyover
+            video = render_flyover.render_flyover_video(
+                render_id, activity_id, port=config.PORT,
+                width=width, height=height, seconds=seconds)
+            if video is None:
+                # Pull the detailed error from the status file.
+                try:
+                    err = json.loads((job["dir"] / "status.json").read_text()).get("error")
+                except Exception:
+                    err = "render failed"
+                job["status"] = "error"
+                job["error"] = err
+            else:
+                job["status"] = "done"
+                job["video"] = f"/api/flyover-render/{render_id}/video"
+        except Exception as e:
+            job["status"] = "error"
+            job["error"] = str(e)
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    return render_id
+
+
+def flyover_render_status(render_id):
+    job = RENDER_JOBS.get(render_id)
+    if not job:
+        return {"error": "unknown render"}
+    # Live from the renderer's status file if the job is running.
+    try:
+        sf = job["dir"] / "status.json"
+        if sf.exists():
+            s = json.loads(sf.read_text())
+            job["status"] = s.get("state", job["status"])
+            job["frame"] = s.get("frame", job["frame"])
+            job["total"] = s.get("total", job["total"])
+            if s.get("error"):
+                job["error"] = s["error"]
+    except Exception:
+        pass
+    return {
+        "status": job["status"], "frame": job.get("frame", 0),
+        "total": job.get("total", 0), "video": job["video"],
+        "error": job["error"],
+    }
+
+
+def prune_render_jobs(keep_id=None):
+    now = time.time()
+    for rid in list(RENDER_JOBS):
+        if rid == keep_id or now - RENDER_JOBS[rid]["born"] <= RENDER_TTL:
+            continue
+        try:
+            import shutil
+            shutil.rmtree(RENDER_JOBS[rid]["dir"], ignore_errors=True)
+        except Exception:
+            pass
+        del RENDER_JOBS[rid]
+
+
+def get_flyover_track(activity_id):
+    """GPS+altitude track resampled at a fixed ground spacing, cached.
+
+    Fixed spacing (not fixed point count) matters for the flyover: the
+    camera advances a constant number of metres per frame, so evenly
+    spaced points give it a constant, smooth motion no matter how fast
+    the ride was (records are ~1s apart, i.e. 5 m apart at 18 km/h and
+    14 m at 50 km/h).
+    """
+    cache_file = FLYOVER_CACHE / f"flyover_{activity_id}.json"
+    try:
+        payload = json.loads(cache_file.read_text(encoding="utf-8"))
+        if payload.get("step_m") == FLYOVER_STEP_M:
+            return payload
+    except Exception:
+        pass
+    conn = _connect_db()
+    if conn is None:
+        return {"points": []}
+    rows = conn.execute(
+        """
+        SELECT position_lat, position_long, altitude, timestamp
+        FROM activity_records
+        WHERE activity_id = ? AND position_lat IS NOT NULL
+          AND position_long IS NOT NULL
+        ORDER BY record
+        """,
+        (activity_id,),
+    ).fetchall()
+
+    # Cumulative distance over raw records.
+    R = 6371000.0
+    D2R = math.pi / 180.0
+    cum = [0.0]
+    prev = None
+    for r in rows:
+        if prev is not None:
+            la1, lo1 = prev
+            la2, lo2 = r["position_lat"], r["position_long"]
+            dy = (la2 - la1) * D2R
+            dx = (lo2 - lo1) * D2R * math.cos((la1 + la2) / 2 * D2R)
+            cum.append(cum[-1] + math.hypot(dy, dx) * R)
+        else:
+            cum.append(0.0)
+        prev = (r["position_lat"], r["position_long"])
+    total = cum[-1]
+
+    # Resample: walk the target distances, interpolating between records.
+    n_out = int(total / FLYOVER_STEP_M) + 1
+    points = []
+    j = 0
+    for k in range(n_out):
+        target = k * FLYOVER_STEP_M
+        while j < len(rows) - 2 and cum[j + 1] < target:
+            j += 1
+        seg = (cum[j + 1] - cum[j]) or 1.0
+        f = max(0.0, min(1.0, (target - cum[j]) / seg))
+        r0, r1 = rows[j], rows[j + 1]
+        lat = r0["position_lat"] + (r1["position_lat"] - r0["position_lat"]) * f
+        lon = r0["position_long"] + (r1["position_long"] - r0["position_long"]) * f
+        a0, a1 = r0["altitude"], r1["altitude"]
+        alt = None
+        if a0 is not None and a1 is not None:
+            alt = round(a0 + (a1 - a0) * f, 1)
+        elif a0 is not None:
+            alt = round(a0, 1)
+        t0 = r0["timestamp"]
+        ts = t0 if f < 0.5 else (r1["timestamp"] or t0)
+        points.append([lat, lon, alt, ts])
+    if len(points) < 2:
+        r = rows[-1]
+        alt = r["altitude"]
+        points.append([r["position_lat"], r["position_long"],
+                       round(alt, 1) if alt is not None else None,
+                       r["timestamp"]])
+    payload = {"step_m": FLYOVER_STEP_M, "points": points}
+    try:
+        FLYOVER_CACHE.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+        pass
+    return payload
 
 
 def get_track(activity_id):
@@ -1550,4 +2045,5 @@ def run_sync(latest=None):
 if __name__ == "__main__":
     port = config.PORT
     print(f"Serving at http://127.0.0.1:{port}/")
-    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    from http.server import ThreadingHTTPServer
+    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()

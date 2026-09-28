@@ -108,7 +108,7 @@ export async function renderActivity(activityId) {
   const details = await fetchActivityDetails(activityId);
   const records = await fetchActivityRecords(activityId, 'distance,altitude,hr,speed,timestamp,position_lat,position_long,cadence,power,temperature', 3000);
 
-  renderHeader(details);
+  renderHeader(details, activityId);
   setupDeleteActivity(activityId, details.activity);
   renderClimbsTable(activityId, details.climbs || [], records);
   setupJournal(activityId);
@@ -120,7 +120,7 @@ export async function renderActivity(activityId) {
   setupIdentifySegments(activityId);
 }
 
-function renderHeader(details) {
+function renderHeader(details, activityId) {
   const act = details.activity;
   const header = document.getElementById('activity-header');
   const deviceBadges = (details.devices || []).map(d => {
@@ -136,7 +136,10 @@ function renderHeader(details) {
         <p class="text-muted mb-2">${fmtDate(act.start_time)} · ${fmtTime(act.start_time)}</p>
         ${deviceBadges ? `<div class="mb-3">${deviceBadges}</div>` : ''}
       </div>
-      <button id="delete-activity-btn" class="btn btn-sm btn-outline-danger" title="Delete this activity locally">Delete</button>
+      <div class="d-flex gap-2">
+        <a href="#flyover/${activityId}" class="btn btn-sm btn-outline-primary" id="flyover-btn" title="3D flyover of this ride">▶ Flyover</a>
+        <button id="delete-activity-btn" class="btn btn-sm btn-outline-danger" title="Delete this activity locally">Delete</button>
+      </div>
     </div>
     <div class="row g-2">
       <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtDistance(act.distance)}</div><div class="stat-label">Distance</div></div></div>
@@ -277,7 +280,7 @@ function renderClimbsTable(activityId, climbs, records) {
     row.innerHTML = `
       <td>${i + 1}</td>
       <td class="climb-name-cell">
-        <a href="#climb/${key}" class="climb-name-link text-decoration-none text-muted">Unnamed segment</a>
+        <a href="#climb/${key}" class="climb-name-link text-decoration-none text-body-secondary">Unnamed segment</a>
         <button class="btn btn-sm btn-link py-0 climb-edit-btn" title="Edit name">✎</button>
         <button class="btn btn-sm btn-link py-0 climb-modify-btn" title="Modify segment on map">🗺</button>
         <button class="btn btn-sm btn-link py-0 climb-analysis-btn" title="Per-bin analysis">📊</button>
@@ -507,11 +510,11 @@ function updateClimbNameCells(names) {
     if (!link) continue;
     if (entry && entry.name) {
       link.textContent = entry.name;
-      const badgeClass = entry.source === 'manual' ? 'text-primary' : 'text-dark';
+      const badgeClass = entry.source === 'manual' ? 'text-primary' : 'fw-semibold';
       link.className = `climb-name-link text-decoration-none ${badgeClass}`;
     } else {
       link.textContent = 'Unnamed segment';
-      link.className = 'climb-name-link text-decoration-none text-muted';
+      link.className = 'climb-name-link text-decoration-none text-body-secondary';
     }
     // keep edit/modify buttons after update
     const cell = link.closest('.climb-name-cell');

@@ -117,6 +117,18 @@ export async function fetchClimbDb() {
   return res.json();
 }
 
+export async function fetchActivityFlyover(activityId) {
+  const res = await fetch(`${BASE}/api/activity/${activityId}/flyover`);
+  if (!res.ok) throw new Error('Failed to load flyover track');
+  return res.json();
+}
+
+export async function fetchFlyoverPois(activityId) {
+  const res = await fetch(`${BASE}/api/activity/${activityId}/flyover-pois`);
+  if (!res.ok) throw new Error('Failed to load flyover POIs');
+  return res.json();
+}
+
 export async function saveClimbName(id, startDistanceM, endDistanceM, name) {
   const res = await fetch(`${BASE}/api/activity/${id}/climb-name`, {
     method: 'POST',
