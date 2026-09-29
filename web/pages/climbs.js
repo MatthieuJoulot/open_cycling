@@ -11,6 +11,8 @@ let regionsLoading = false;
 let sortState = { key: 'date', dir: 'desc' };
 // Difficulty metric shown in the single Difficulty column.
 let difficultyMetric = 'fiets';
+// Validation filter: 'all' | 'validated' | 'unvalidated'.
+let validationFilter = 'all';
 
 export async function renderClimbs() {
   const app = document.getElementById('app');
@@ -29,6 +31,14 @@ export async function renderClimbs() {
               <select id="difficulty-metric" class="form-select form-select-sm">
                 <option value="fiets" selected>Difficulty (FIETS)</option>
                 <option value="cotacol">Cotacol points (profile)</option>
+              </select>
+            </div>
+            <div class="col-md-2">
+              <label class="form-label small text-muted">Validation</label>
+              <select id="validation-filter" class="form-select form-select-sm">
+                <option value="all" selected>All</option>
+                <option value="validated">Validated ✓</option>
+                <option value="unvalidated">Not validated</option>
               </select>
             </div>
             <div class="col-md-3">
@@ -144,6 +154,10 @@ export async function renderClimbs() {
   document.getElementById('climb-group').addEventListener('change', onGroupChange);
   document.getElementById('difficulty-metric').addEventListener('change', e => {
     difficultyMetric = e.target.value;
+    renderList();
+  });
+  document.getElementById('validation-filter').addEventListener('change', e => {
+    validationFilter = e.target.value;
     renderList();
   });
   document.getElementById('climbs-head-row').addEventListener('click', e => {
@@ -483,7 +497,9 @@ function updateSortIndicators() {
     }
   }
   const dh = document.getElementById('difficulty-head');
-  if (dh) dh.childNodes[0].textContent = difficultyMetric === 'cotacol' ? 'Cotacol pts' : 'Difficulty';
+  if (dh) dh.title = difficultyMetric === 'cotacol'
+    ? 'Cotacol points (profile-based, Climbfinder-style)'
+    : 'Difficulty score (list version: no summit-altitude bonus)';
 }
 
 function renderList() {
@@ -493,7 +509,10 @@ function renderList() {
 
   let filtered = allClimbs.filter(c => {
     const text = `${c.name || ''} ${c.category || ''} ${c.region || ''}`.toLowerCase();
-    return !term || text.includes(term);
+    if (term && !text.includes(term)) return false;
+    if (validationFilter === 'validated' && !c.validated_climb_id) return false;
+    if (validationFilter === 'unvalidated' && c.validated_climb_id) return false;
+    return true;
   });
 
   const tbody = document.getElementById('climbs-list-body');
