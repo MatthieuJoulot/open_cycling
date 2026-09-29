@@ -384,6 +384,66 @@ function fietsScore(ascentM, lengthM, summitAltM) {
   return base + bonus;
 }
 
+// Profile-based difficulty (Cotacol method, as used by Climbfinder):
+// the climb is cut into sections and each section scores
+//   dI = 0.001 · s² · dL
+// with s = local gradient (%) and dL = section length (m). Because
+// effort grows with the square of the gradient, a steep wall inside
+// an otherwise easy climb adds a lot of points — unlike the FIETS-style
+// score which only sees totals. Summed over the whole profile it is the
+// total effort to reach the top. A metre climbed at 10% = 1.0 point,
+// at 5% = 0.5 points, at 1% = 0.1 points.
+function cotacolScore(segment) {
+  if (!segment || segment.length < 2) return null;
+  const pts = segment
+    .filter(r => r.altitude != null && r.distance != null)
+    .sort((a, b) => a.distance - b.distance);
+  if (pts.length < 2) return null;
+
+  // Resample the profile at fixed 100 m stations (like the Encyclopedia
+  // Cotacol): consecutive GPS records are a few metres apart and their
+  // altitude jitter would explode through the squared gradient.
+  const SECTION = 100;
+  const d0 = pts[0].distance;
+  const d1 = pts[pts.length - 1].distance;
+  const nStations = Math.floor((d1 - d0) / SECTION);
+  if (nStations < 1) return null;
+  const altitudeAt = (d) => {
+    let lo = null, hi = null;
+    for (const r of pts) {
+      if (r.distance <= d) lo = r;
+      if (r.distance >= d && hi == null) hi = r;
+    }
+    if (lo && hi) {
+      if (lo === hi) return lo.altitude;
+      const t = (d - lo.distance) / Math.max(1e-6, hi.distance - lo.distance);
+      return lo.altitude + (hi.altitude - lo.altitude) * t;
+    }
+    return lo ? lo.altitude : hi ? hi.altitude : null;
+  };
+  // Collect station altitudes, then smooth with a 3-station centred
+  // median: barometric jitter of a couple of metres per station would
+  // otherwise explode through the squared gradient term.
+  const raw = [];
+  for (let i = 0; i <= nStations; i++) {
+    const a = altitudeAt(d0 + i * SECTION);
+    raw.push(a);
+  }
+  const smoothed = raw.map((_, i) => {
+    const w = raw.slice(Math.max(0, i - 1), i + 2).filter(v => v != null).sort((x, y) => x - y);
+    return w.length ? w[Math.floor((w.length - 1) / 2)] : null;
+  });
+  let total = 0;
+  for (let i = 0; i < nStations; i++) {
+    const a = smoothed[i], b = smoothed[i + 1];
+    if (a == null || b == null) continue;
+    const grade = ((b - a) / SECTION) * 100;
+    if (grade > 0) total += 0.001 * grade * grade * SECTION;
+  }
+  if (nStations * SECTION < 100) return null;
+  return total;
+}
+
 function gradeColor(grade) {
   if (grade < -1) return '#0d6efd';      // blue downhill
   if (grade < 1) return '#2ecc71';       // bright green flat
@@ -682,13 +742,18 @@ async function renderStats(members, count) {
     return fietsScore(latest.elevation_gain_m, latest.length_m, topAlt);
   })();
 
+  // Profile-based difficulty (Cotacol/Climbfinder): needs the full segment
+  // records, not just totals.
+  const cotacol = currentSegment && currentSegment.length ? cotacolScore(currentSegment) : null;
+
   const stats = [
     { label: 'Times done', value: count || members.length },
     { label: 'Length', value: fmtDistance(latest.length_m / 1000) },
     { label: 'Ascent', value: fmtElevation(latest.elevation_gain_m) },
     { label: 'Altitude', value: altFromTo || '-' },
     { label: 'Avg grade', value: fmtGrade(latest.avg_grade_percent) },
-    { label: 'Difficulty', value: fiets != null ? fiets.toFixed(1) : '-' },
+    { label: 'Difficulty', value: fiets != null ? fiets.toFixed(1) : '-', title: 'FIETS-based score from totals (ascent, length, summit)' },
+    { label: 'Profile difficulty', value: cotacol != null ? cotacol.toFixed(0) + ' pts' : '-', title: 'Cotacol score (Climbfinder-style): sum of 0.001·grade²·length per section — steep sections weigh exponentially' },
     { label: 'Best time', value: bestTime ? fmtDuration(bestTime.elapsed_time_s) : '-' },
     { label: 'Predicted time', value: '…', id: 'stat-predicted' },
     { label: 'Best VAM', value: bestVam ? Math.round(bestVam.vam) + ' m/h' : '-' },
@@ -696,7 +761,7 @@ async function renderStats(members, count) {
 
   container.innerHTML = stats.map(s => `
     <div class="col-6 col-md-3">
-      <div class="card text-center p-2">
+      <div class="card text-center p-2" ${s.title ? `title="${s.title}"` : ''}>
         <div class="stat-value" ${s.id ? `id="${s.id}"` : ''}>${s.value}</div>
         <div class="stat-label">${s.label}</div>
       </div>

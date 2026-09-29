@@ -26,6 +26,7 @@ export async function renderClimbs() {
                 <option value="date-asc">Oldest first</option>
                 <option value="name-asc">Name A-Z</option>
                 <option value="difficulty-desc">Hardest first</option>
+                <option value="cotacol-desc">Hardest first (profile/Cotacol)</option>
                 <option value="length-desc">Longest first</option>
                 <option value="ascent-desc">Most ascent</option>
                 <option value="times-desc">Most times done</option>
@@ -74,6 +75,7 @@ export async function renderClimbs() {
               <th>Avg grade</th>
               <th>Max grade</th>
               <th title="Difficulty score (list version: no summit-altitude bonus)">Difficulty</th>
+              <th title="Cotacol points (profile-based, Climbfinder-style)">Cotacol</th>
               <th>Done</th>
               <th>Action</th>
             </tr>
@@ -437,6 +439,7 @@ function sortClimbs(list, sort) {
     if (sort === 'date-asc') return new Date(a.lastClimbed || 0) - new Date(b.lastClimbed || 0);
     if (sort === 'name-asc') return (a.name || '').localeCompare(b.name || '');
     if (sort === 'difficulty-desc') return f(b) - f(a);
+    if (sort === 'cotacol-desc') return (b.cotacol_points || 0) - (a.cotacol_points || 0);
     if (sort === 'length-desc') return (b.length_m || 0) - (a.length_m || 0);
     if (sort === 'ascent-desc') return (b.elevation_gain_m || 0) - (a.elevation_gain_m || 0);
     if (sort === 'times-desc') return (b.groupSize || 0) - (a.groupSize || 0);
@@ -569,6 +572,7 @@ function buildClimbRow(c) {
     <td>${fmtGrade(c.avg_grade_percent)}</td>
     <td>${fmtGrade(c.max_grade_percent)}</td>
     <td>${fietsList(c) != null ? fietsList(c).toFixed(1) : '—'}</td>
+    <td>${c.cotacol_points != null ? Math.round(c.cotacol_points) : '—'}</td>
     <td>${c.groupSize || 1}</td>
     <td>
       <button class="btn btn-sm btn-link py-0 modify-segment-btn" data-activity-id="${c.activityId}" data-start="${c.start_distance_m}" data-end="${c.end_distance_m}" title="Modify segment">✎</button>

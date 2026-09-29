@@ -72,6 +72,41 @@ export async function renderWiki() {
       </div>
 
       <div class="card mb-3">
+        <div class="card-header fw-semibold">Profile difficulty (Cotacol points)</div>
+        <div class="card-body">
+          <p>The <strong>Profile difficulty</strong> card on each climb uses the <strong>Cotacol method</strong> — the section-based scoring system from the Belgian <em>Encyclopedia Cotacol</em> (1989), also used by Climbfinder for its difficulty points. Unlike the FIETS-based score, it looks at the <em>shape</em> of the climb, not just its totals.</p>
+
+          <p class="mb-2"><strong>How it works</strong></p>
+          <ul>
+            <li>The climb is divided into fixed <strong>100 m sections</strong>. For each section the local gradient <code>s</code> (in %) is measured, and the section scores:</li>
+          </ul>
+          <p class="text-center fs-5"><code>dI = 0.001 · s² · dL</code></p>
+          <p>with <code>dL</code> the section length. The total is the sum of all sections — the total effort to reach the top.</p>
+          <ul>
+            <li>Because effort grows with the <strong>square</strong> of the gradient, steep walls are punished heavily: one metre climbed at 10% scores 1.0 point, at 5% only 0.5, at 1% only 0.1.</li>
+            <li>Two climbs with the same ascent and length can therefore score very differently: a steady climb scores far less than one with a steep ramp in the middle, which the FIETS-style score cannot see.</li>
+            <li>Descents and flat sections score zero, so a climb with a dip in the middle only accumulates effort on the actual uphills.</li>
+          </ul>
+
+          <p class="mb-2"><strong>Reference values</strong></p>
+          <div class="table-responsive">
+            <table class="table table-sm">
+              <thead>
+                <tr><th>Climb</th><th>Cotacol points</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Alpe d'Huez (13.8 km at 8.1%)</td><td>≈ 900</td></tr>
+                <tr><td>Col du Tourmalet east (19.1 km at 7.3%)</td><td>≈ 1075</td></tr>
+                <tr><td>Koppenberg (1.2 km at 11.6%, cobbles)</td><td>≈ 160</td></tr>
+                <tr><td>Local 1 km hill at 3–4%</td><td>≈ 10</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="small text-muted mb-0">Our implementation resamples your GPS recording at 100 m stations and smooths altitude with a centred median, because a bike computer's barometric noise would otherwise inflate the squared-gradient sum.</p>
+        </div>
+      </div>
+
+      <div class="card mb-3">
         <div class="card-header fw-semibold">Predicted climb time</div>
         <div class="card-body">
           <p>On every climb page you get a <strong>personal predicted time</strong> — how long the climb should take <em>you</em>, not a generic rider. It works even for climbs you have never ridden.</p>
