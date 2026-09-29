@@ -20,8 +20,12 @@ A local web app to detect, name, edit, and review cycling climbs from Garmin act
 
 ## Requirements
 
-- Python 3.10+ (standard library only, no pip packages needed for this app)
+- Python 3.10+ (standard library only, no pip packages needed for the core app)
 - [GarminDB](https://github.com/tgoessler/GarminDB) — syncs activities from Garmin Connect into SQLite. The sync button calls its CLI, so it must be installed and logged in beforehand.
+- For the **flyover video export** only (everything else works without them):
+  - `playwright` Python package (`pip3 install playwright`) — drives an installed Google Chrome in headless mode (no browser download needed).
+  - `ffmpeg` on the PATH — assembles the rendered frames into a video.
+- Map libraries (Leaflet, MapLibre GL, Chart.js, Bootstrap) load from CDN in the browser; map and elevation tiles are fetched through the app's own caching proxy — no API keys required.
 
 ## Installation
 
