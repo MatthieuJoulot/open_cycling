@@ -62,7 +62,7 @@ export async function renderActivity(activityId) {
             <div id="climbs-loading" class="small text-muted mb-2 d-none">Looking up names from OpenStreetMap…</div>
             <div class="table-responsive">
               <table class="table table-sm table-striped">
-                <thead><tr><th>#</th><th>Name</th><th>Category</th><th>Start (km)</th><th>Length (km)</th><th>Elev. gain</th><th>Avg grade</th><th>Max grade</th><th>VAM</th><th>Δ PR</th></tr></thead>
+                <thead><tr><th>#</th><th>Name</th><th>Category</th><th>Start (km)</th><th>Length (km)</th><th>Elev. gain</th><th>Avg grade</th><th>Steepest 100m</th><th>VAM</th><th>Δ PR</th></tr></thead>
                 <tbody id="climbs-body"></tbody>
               </table>
             </div>
@@ -297,7 +297,7 @@ function renderClimbsTable(activityId, climbs, records) {
       <td>${(c.length_m / 1000).toFixed(1)}</td>
       <td>${fmtElevation(c.elevation_gain_m)}</td>
       <td>${fmtGrade(c.avg_grade_percent)}</td>
-      <td>${fmtGrade(c.max_grade_percent)}</td>
+      <td>${c.steepest_100m_grade != null ? fmtGrade(c.steepest_100m_grade) : '-'}</td>
       <td>${vam ? Math.round(vam) + ' m/h' : '-'}</td>
       <td class="climb-pr-cell">…</td>
     `;
@@ -431,7 +431,7 @@ function renderCandidates(activityId, candidates) {
       <td>${(c.length_m / 1000).toFixed(2)}</td>
       <td>${fmtElevation(c.elevation_gain_m)}</td>
       <td>${fmtGrade(c.avg_grade_percent)}</td>
-      <td>${fmtGrade(c.max_grade_percent)}</td>
+      <td>${c.steepest_100m_grade != null ? fmtGrade(c.steepest_100m_grade) : '-'}</td>
       <td><button class="btn btn-sm btn-primary add-candidate-btn" data-start="${c.start_distance_m}" data-end="${c.end_distance_m}">Add</button></td>
     </tr>
   `).join('');
@@ -440,7 +440,7 @@ function renderCandidates(activityId, candidates) {
     <h6 class="mt-3">Candidate segments nearby</h6>
     <div class="table-responsive">
       <table class="table table-sm table-striped">
-        <thead><tr><th>#</th><th>Category</th><th>Start (km)</th><th>Length (km)</th><th>Elev. gain</th><th>Avg grade</th><th>Max grade</th><th></th></tr></thead>
+        <thead><tr><th>#</th><th>Category</th><th>Start (km)</th><th>Length (km)</th><th>Elev. gain</th><th>Avg grade</th><th>Steepest 100m</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>

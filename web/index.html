@@ -27,6 +27,10 @@
     .sidebar-sticky { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
     .mini-map { background: var(--bs-tertiary-bg); }
     .activity-section .card-header { cursor: pointer; }
+    #climbs-head-row th[data-sort] { cursor: pointer; user-select: none; white-space: nowrap; }
+    #climbs-head-row th[data-sort]:hover { color: var(--bs-primary); }
+    #climbs-head-row th.sort-active { color: var(--bs-primary); text-decoration: underline; }
+    #climbs-head-row .sort-arrow { font-size: .8em; }
     .activity-section .card-header .chevron::before { content: '▼'; }
     .activity-section .card-header.collapsed .chevron::before { content: '▶'; }
     [data-bs-theme="dark"] .mini-map { filter: brightness(0.8) saturate(0.8); }

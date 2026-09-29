@@ -7,6 +7,11 @@ let allGroups = {};
 let allRegions = {};
 let regionsLoading = false;
 
+// Column sorting state: key = column, dir = 'asc' | 'desc'.
+let sortState = { key: 'date', dir: 'desc' };
+// Difficulty metric shown in the single Difficulty column.
+let difficultyMetric = 'fiets';
+
 export async function renderClimbs() {
   const app = document.getElementById('app');
   app.innerHTML = `
@@ -20,18 +25,10 @@ export async function renderClimbs() {
               <input type="text" id="climb-search" class="form-control form-control-sm" placeholder="Name, place, category…">
             </div>
             <div class="col-md-3">
-              <label class="form-label small text-muted">Sort by</label>
-              <select id="climb-sort" class="form-select form-select-sm">
-                <option value="date-desc">Newest first</option>
-                <option value="date-asc">Oldest first</option>
-                <option value="name-asc">Name A-Z</option>
-                <option value="difficulty-desc">Hardest first</option>
-                <option value="cotacol-desc">Hardest first (profile/Cotacol)</option>
-                <option value="length-desc">Longest first</option>
-                <option value="ascent-desc">Most ascent</option>
-                <option value="times-desc">Most times done</option>
-                <option value="validated-first">Validated first</option>
-                <option value="unvalidated-first">Not validated first</option>
+              <label class="form-label small text-muted">Difficulty metric</label>
+              <select id="difficulty-metric" class="form-select form-select-sm">
+                <option value="fiets" selected>Difficulty (FIETS)</option>
+                <option value="cotacol">Cotacol points (profile)</option>
               </select>
             </div>
             <div class="col-md-3">
@@ -50,6 +47,7 @@ export async function renderClimbs() {
               </div>
             </div>
           </div>
+          <div class="small text-muted mt-2">Click a column header to sort; click again to reverse.</div>
           <div class="row g-2 align-items-end mt-1 d-none" id="heat-controls">
             <div class="col-md-3">
               <label class="form-label small text-muted">Basemap</label>
@@ -65,18 +63,17 @@ export async function renderClimbs() {
       <div class="table-responsive" id="climbs-table-wrap">
         <table class="table table-sm table-striped">
           <thead>
-            <tr>
-              <th>Name</th>
-              <th>Region</th>
-              <th>Lastly climbed</th>
+            <tr id="climbs-head-row">
+              <th data-sort="name" title="Click to sort">Name</th>
+              <th data-sort="region" title="Click to sort">Region</th>
+              <th data-sort="date" title="Click to sort">Lastly climbed</th>
               <th>Category</th>
-              <th>Length</th>
-              <th>Ascent</th>
-              <th>Avg grade</th>
-              <th>Max grade</th>
-              <th title="Difficulty score (list version: no summit-altitude bonus)">Difficulty</th>
-              <th title="Cotacol points (profile-based, Climbfinder-style)">Cotacol</th>
-              <th>Done</th>
+              <th data-sort="length" title="Click to sort">Length</th>
+              <th data-sort="ascent" title="Click to sort">Ascent</th>
+              <th data-sort="avggrade" title="Click to sort">Avg grade</th>
+              <th data-sort="steepest" title="Click to sort">Steepest 100m</th>
+              <th data-sort="difficulty" title="Click to sort" id="difficulty-head">Difficulty</th>
+              <th data-sort="times" title="Click to sort">Done</th>
               <th>Action</th>
             </tr>
           </thead>
@@ -144,8 +141,23 @@ export async function renderClimbs() {
   listBody.addEventListener('click', onCountryToggle);
   listBody.addEventListener('click', onRegionToggle);
   document.getElementById('climb-search').addEventListener('input', renderList);
-  document.getElementById('climb-sort').addEventListener('change', renderList);
   document.getElementById('climb-group').addEventListener('change', onGroupChange);
+  document.getElementById('difficulty-metric').addEventListener('change', e => {
+    difficultyMetric = e.target.value;
+    renderList();
+  });
+  document.getElementById('climbs-head-row').addEventListener('click', e => {
+    const th = e.target.closest('th[data-sort]');
+    if (!th) return;
+    const key = th.dataset.sort;
+    if (sortState.key === key) {
+      sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      sortState.key = key;
+      sortState.dir = key === 'name' || key === 'region' ? 'asc' : 'desc';
+    }
+    renderList();
+  });
   document.getElementById('view-list-btn').addEventListener('click', () => setView('list'));
   document.getElementById('view-map-btn').addEventListener('click', () => setView('map'));
   document.getElementById('view-heat-btn').addEventListener('click', () => setView('heat'));
@@ -429,28 +441,55 @@ function flattenClimbs(activities) {
   return list;
 }
 
-function sortClimbs(list, sort) {
-  const isVal = c => c.validated_climb_id ? 1 : 0;
-  const f = c => fietsList(c) || 0;
+function sortValue(c, key) {
+  switch (key) {
+    case 'name': return (c.name || '').toLowerCase();
+    case 'region': return (c.region || '').toLowerCase();
+    case 'date': return new Date(c.lastClimbed || 0).getTime();
+    case 'length': return c.length_m || 0;
+    case 'ascent': return c.elevation_gain_m || 0;
+    case 'avggrade': return c.avg_grade_percent || 0;
+    case 'steepest': return c.steepest_100m_grade || 0;
+    case 'difficulty': return difficultyOf(c) || 0;
+    case 'times': return c.groupSize || 1;
+    default: return 0;
+  }
+}
+
+function difficultyOf(c) {
+  if (difficultyMetric === 'cotacol') return c.cotacol_points != null ? c.cotacol_points : 0;
+  return fietsList(c) != null ? fietsList(c) : 0;
+}
+
+function sortClimbs(list) {
+  const { key, dir } = sortState;
+  const mul = dir === 'asc' ? 1 : -1;
   return list.slice().sort((a, b) => {
-    if (sort === 'validated-first') return isVal(b) - isVal(a) || new Date(b.lastClimbed || 0) - new Date(a.lastClimbed || 0);
-    if (sort === 'unvalidated-first') return isVal(a) - isVal(b) || new Date(b.lastClimbed || 0) - new Date(a.lastClimbed || 0);
-    if (sort === 'date-desc') return new Date(b.lastClimbed || 0) - new Date(a.lastClimbed || 0);
-    if (sort === 'date-asc') return new Date(a.lastClimbed || 0) - new Date(b.lastClimbed || 0);
-    if (sort === 'name-asc') return (a.name || '').localeCompare(b.name || '');
-    if (sort === 'difficulty-desc') return f(b) - f(a);
-    if (sort === 'cotacol-desc') return (b.cotacol_points || 0) - (a.cotacol_points || 0);
-    if (sort === 'length-desc') return (b.length_m || 0) - (a.length_m || 0);
-    if (sort === 'ascent-desc') return (b.elevation_gain_m || 0) - (a.elevation_gain_m || 0);
-    if (sort === 'times-desc') return (b.groupSize || 0) - (a.groupSize || 0);
+    const va = sortValue(a, key), vb = sortValue(b, key);
+    if (va < vb) return -1 * mul;
+    if (va > vb) return 1 * mul;
     return 0;
   });
 }
 
+function updateSortIndicators() {
+  for (const th of document.querySelectorAll('#climbs-head-row th[data-sort]')) {
+    th.classList.toggle('sort-active', th.dataset.sort === sortState.key);
+    const arrow = th.querySelector('.sort-arrow');
+    if (arrow) arrow.remove();
+    if (th.dataset.sort === sortState.key) {
+      th.insertAdjacentHTML('beforeend',
+        ` <span class="sort-arrow">${sortState.dir === 'asc' ? '↑' : '↓'}</span>`);
+    }
+  }
+  const dh = document.getElementById('difficulty-head');
+  if (dh) dh.childNodes[0].textContent = difficultyMetric === 'cotacol' ? 'Cotacol pts' : 'Difficulty';
+}
+
 function renderList() {
   const term = (document.getElementById('climb-search').value || '').toLowerCase();
-  const sort = document.getElementById('climb-sort').value;
   const group = document.getElementById('climb-group').value;
+  updateSortIndicators();
 
   let filtered = allClimbs.filter(c => {
     const text = `${c.name || ''} ${c.category || ''} ${c.region || ''}`.toLowerCase();
@@ -493,13 +532,13 @@ function renderList() {
         countryHeading.className = 'country-toggle table-primary';
         countryHeading.dataset.country = countryId;
         countryHeading.style.cursor = 'pointer';
-        countryHeading.innerHTML = `<td colspan="10" class="fw-bold">
+        countryHeading.innerHTML = `<td colspan="11" class="fw-bold">
           <span class="me-2">▼</span>${escapeHtml(country)}
         </td>`;
         tbody.appendChild(countryHeading);
         currentCountry = country;
       }
-      const rows = sortClimbs(grouped[region], sort);
+      const rows = sortClimbs(grouped[region]);
       const regionId = 'region-' + region.toLowerCase().replace(/[^a-z0-9]/g, '-');
       const countryClass = 'country-' + currentCountry.toLowerCase().replace(/[^a-z0-9]/g, '-');
       const heading = document.createElement('tr');
@@ -507,7 +546,7 @@ function renderList() {
       heading.classList.add(countryClass);
       heading.dataset.region = regionId;
       heading.style.cursor = 'pointer';
-      heading.innerHTML = `<td colspan="10" class="table-secondary fw-semibold ps-4">
+      heading.innerHTML = `<td colspan="11" class="table-secondary fw-semibold ps-4">
         <span class="me-2">▼</span>${escapeHtml(region)} <span class="text-muted fw-normal">(${rows.length})</span>
       </td>`;
       tbody.appendChild(heading);
@@ -518,7 +557,7 @@ function renderList() {
       }
     }
   } else {
-    const rows = sortClimbs(filtered, sort);
+    const rows = sortClimbs(filtered);
     for (const c of rows) tbody.appendChild(buildClimbRow(c));
   }
 }
@@ -560,6 +599,13 @@ function fietsList(c) {
   return H * H / (D * 10);
 }
 
+function difficultyCell(c) {
+  if (difficultyMetric === 'cotacol') {
+    return c.cotacol_points != null ? Math.round(c.cotacol_points) : '—';
+  }
+  return fietsList(c) != null ? fietsList(c).toFixed(1) : '—';
+}
+
 function buildClimbRow(c) {
   const row = document.createElement('tr');
   row.innerHTML = `
@@ -570,9 +616,8 @@ function buildClimbRow(c) {
     <td>${fmtDistance(c.length_m / 1000)}</td>
     <td>${fmtElevation(c.elevation_gain_m)}</td>
     <td>${fmtGrade(c.avg_grade_percent)}</td>
-    <td>${fmtGrade(c.max_grade_percent)}</td>
-    <td>${fietsList(c) != null ? fietsList(c).toFixed(1) : '—'}</td>
-    <td>${c.cotacol_points != null ? Math.round(c.cotacol_points) : '—'}</td>
+    <td>${c.steepest_100m_grade != null ? fmtGrade(c.steepest_100m_grade) : '—'}</td>
+    <td>${difficultyCell(c)}</td>
     <td>${c.groupSize || 1}</td>
     <td>
       <button class="btn btn-sm btn-link py-0 modify-segment-btn" data-activity-id="${c.activityId}" data-start="${c.start_distance_m}" data-end="${c.end_distance_m}" title="Modify segment">✎</button>

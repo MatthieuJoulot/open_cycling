@@ -57,7 +57,7 @@ def _prepare_points(distance_m, altitude, lat, lon):
     return points
 
 
-def cotacol_score(points, start_m, end_m, section=100.0):
+def profile_metrics(points, start_m, end_m, section=100.0):
     """Cotacol difficulty points (as used by Climbfinder) for a range.
 
     The profile is resampled at fixed `section` stations, altitudes are
@@ -100,6 +100,7 @@ def cotacol_score(points, start_m, end_m, section=100.0):
         smoothed.append(window[len(window) // 2] if window else None)
 
     total = 0.0
+    steepest = 0.0
     for i in range(n):
         a, b = smoothed[i], smoothed[i + 1]
         if a is None or b is None:
@@ -108,9 +109,12 @@ def cotacol_score(points, start_m, end_m, section=100.0):
         if gain > 0:
             grade = gain / section * 100
             total += 0.001 * grade * grade * section
+            if gain > steepest:
+                steepest = gain
     if n * section < section:
         return None
-    return round(total, 1)
+    return {"cotacol_points": round(total, 1),
+            "steepest_100m_grade": round(steepest / section * 100, 1)}
 
 
 def _build_climb(points, smoothed, start_idx, end_idx, max_grade):
@@ -120,6 +124,7 @@ def _build_climb(points, smoothed, start_idx, end_idx, max_grade):
     score = length * avg_grade
     start_pt = points[start_idx]
     end_pt = points[end_idx]
+    metrics = profile_metrics(points, start_pt["d"], end_pt["d"]) or {}
     return {
         "start_distance_m": round(start_pt["d"], 1),
         "end_distance_m": round(end_pt["d"], 1),
@@ -127,12 +132,13 @@ def _build_climb(points, smoothed, start_idx, end_idx, max_grade):
         "elevation_gain_m": round(elev_gain, 1),
         "avg_grade_percent": round(avg_grade, 1),
         "max_grade_percent": round(max_grade, 1),
-        "cotacol_points": cotacol_score(points, start_pt["d"], end_pt["d"]),
+        "cotacol_points": metrics.get("cotacol_points"),
+        "steepest_100m_grade": metrics.get("steepest_100m_grade"),
         "category": grade_category(score),
-        "start_lat": start_pt["lat"],
-        "start_lon": start_pt["lon"],
-        "end_lat": end_pt["lat"],
-        "end_lon": end_pt["lon"],
+        "start_lat": start_pt.get("lat"),
+        "start_lon": start_pt.get("lon"),
+        "end_lat": end_pt.get("lat"),
+        "end_lon": end_pt.get("lon"),
     }
 
 
@@ -313,12 +319,14 @@ def _recompute_envelope(climb, points):
     gain = smoothed[end_idx] - smoothed[start_idx]
     avg = (gain / length * 100) if length > 0 else 0
     score = length * avg
+    metrics = profile_metrics(pts, start_m, end_m) or {}
     return {
         **climb,
         "length_m": round(length, 1),
         "elevation_gain_m": round(gain, 1),
         "avg_grade_percent": round(avg, 1),
-        "cotacol_points": cotacol_score(pts, start_m, end_m),
+        "cotacol_points": metrics.get("cotacol_points"),
+        "steepest_100m_grade": metrics.get("steepest_100m_grade"),
         "category": grade_category(score),
         "start_lat": pts[start_idx]["lat"],
         "start_lon": pts[start_idx]["lon"],
@@ -377,8 +385,9 @@ def compute_segment(points, start_distance_m, end_distance_m, smooth_window=SMOO
     result = _build_climb(points, smoothed, start_idx, end_idx, max_grade)
     result["start_distance_m"] = round(start_distance_m, 1)
     result["end_distance_m"] = round(end_distance_m, 1)
-    result["cotacol_points"] = cotacol_score(
-        points, start_distance_m, end_distance_m)
+    metrics = profile_metrics(points, start_distance_m, end_distance_m) or {}
+    result["cotacol_points"] = metrics.get("cotacol_points")
+    result["steepest_100m_grade"] = metrics.get("steepest_100m_grade")
     return result
 
 
