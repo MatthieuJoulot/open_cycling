@@ -171,33 +171,42 @@ function setupClimbNameEdit(key, nameEntry) {
     input.style.maxWidth = '400px';
     const save = async () => {
       const newName = input.value.trim();
-      if (!newName) return;
+      const cancel = () => {
+        input.remove();
+        saveBtn.remove();
+        title.classList.remove('d-none');
+        btn.classList.remove('d-none');
+      };
+      if (!newName) { cancel(); return; }
       const parts = key.split(':');
       const activityId = parts[0];
       const start = parseFloat(parts[1]);
       const end = parseFloat(parts[2]);
       try {
         await saveClimbName(activityId, start, end, newName);
+        // Update the title element itself — it stays in the DOM, only
+        // hidden during the edit, so the new name shows immediately.
         title.textContent = newName;
-        btn.classList.remove('d-none');
-        input.remove();
+        nameEntry = { ...(nameEntry || {}), name: newName };
+        cancel();
       } catch (err) {
         console.error('Failed to save climb name', err);
         alert('Could not save name');
       }
     };
-    input.addEventListener('keydown', e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { input.remove(); btn.classList.remove('d-none'); } });
-    input.addEventListener('blur', () => { input.remove(); btn.classList.remove('d-none'); });
-    title.replaceWith(input);
-    input.focus();
-    input.select();
-    btn.classList.add('d-none');
-    // save button next to input
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { input.remove(); saveBtn.remove(); title.classList.remove('d-none'); btn.classList.remove('d-none'); } });
+    input.addEventListener('blur', () => { setTimeout(() => { if (!document.body.contains(input)) return; input.remove(); saveBtn.remove(); title.classList.remove('d-none'); btn.classList.remove('d-none'); }, 150); });
+    title.classList.add('d-none');
+    title.after(input);
     const saveBtn = document.createElement('button');
     saveBtn.className = 'btn btn-sm btn-primary';
     saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('mousedown', e => e.preventDefault());   // keep input focus so blur doesn't race the click
     saveBtn.addEventListener('click', save);
-    input.parentElement.appendChild(saveBtn);
+    input.after(saveBtn);
+    input.focus();
+    input.select();
+    btn.classList.add('d-none');
   });
 }
 
