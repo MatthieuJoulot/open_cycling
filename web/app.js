@@ -1,5 +1,5 @@
 import { renderNav } from './components/nav.js';
-import { renderSidebar, showSidebar, hideSidebar } from './components/sidebar.js';
+import { renderSidebar, showSidebar } from './components/sidebar.js';
 import { renderHome } from './pages/home.js';
 import { renderActivity } from './pages/activity.js';
 import { renderClimbs } from './pages/climbs.js';
@@ -86,7 +86,8 @@ function route() {
   const ex = hash.match(/^explore\/(.+)$/);
   if (ex) {
     renderNav(true);
-    hideSidebar();
+    showSidebar();
+    renderSidebar('explore');
     (async () => {
       // The detail page needs the full database for lookup.
       if (!document.getElementById('app')) return;
@@ -101,7 +102,8 @@ function route() {
   const fo = hash.match(/^flyover\/([^\?]+)(\?.*)?$/);
   if (fo) {
     renderNav(true);
-    hideSidebar();
+    showSidebar();
+    renderSidebar('feed');
     renderFlyover(fo[1]).finally(() => loading.classList.add('d-none'));
     return;
   }
@@ -118,7 +120,8 @@ function route() {
   const m = hash.match(/^activity\/(.+)$/);
   if (m) {
     renderNav(true);
-    hideSidebar();
+    showSidebar();
+    renderSidebar('feed');
     renderActivity(m[1]).finally(() => loading.classList.add('d-none'));
     return;
   }
@@ -126,7 +129,8 @@ function route() {
   const cm = hash.match(/^climb\/(.+)$/);
   if (cm) {
     renderNav(true);
-    hideSidebar();
+    showSidebar();
+    renderSidebar('climbs');
     renderClimb(cm[1]).finally(() => loading.classList.add('d-none'));
     return;
   }
