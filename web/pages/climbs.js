@@ -77,7 +77,7 @@ export async function renderClimbs() {
               <th data-sort="name" title="Click to sort">Name</th>
               <th data-sort="region" title="Click to sort">Region</th>
               <th data-sort="date" title="Click to sort">Lastly climbed</th>
-              <th>Category</th>
+              <th data-sort="category" title="Click to sort">Category</th>
               <th data-sort="length" title="Click to sort">Length</th>
               <th data-sort="ascent" title="Click to sort">Ascent</th>
               <th data-sort="avggrade" title="Click to sort">Avg grade</th>
@@ -169,7 +169,7 @@ export async function renderClimbs() {
       sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
     } else {
       sortState.key = key;
-      sortState.dir = key === 'name' || key === 'region' ? 'asc' : 'desc';
+      sortState.dir = key === 'name' || key === 'region' || key === 'category' ? 'asc' : 'desc';
     }
     renderList();
   });
@@ -466,10 +466,14 @@ function flattenClimbs(activities) {
   return list;
 }
 
+// Category rank for sorting: HC first, then Cat 1..4, uncategorized last.
+const CATEGORY_RANK = { 'HC': 0, 'Cat 1': 1, 'Cat 2': 2, 'Cat 3': 3, 'Cat 4': 4, 'Uncategorized': 5 };
+
 function sortValue(c, key) {
   switch (key) {
     case 'name': return (c.name || '').toLowerCase();
     case 'region': return (c.region || '').toLowerCase();
+    case 'category': return CATEGORY_RANK[c.category] != null ? CATEGORY_RANK[c.category] : 6;
     case 'date': return new Date(c.lastClimbed || 0).getTime();
     case 'length': return c.length_m || 0;
     case 'ascent': return c.elevation_gain_m || 0;
