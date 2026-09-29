@@ -41,7 +41,6 @@ export async function renderFlyover(activityId) {
         </div>
       </div>
     </div>
-    <a href="#activity/${activityId}" class="btn btn-sm btn-outline-secondary">← Back to ride</a>
   `;
 
   const data = await fetchActivityFlyover(activityId);
@@ -106,13 +105,17 @@ export async function renderFlyover(activityId) {
         { id: 'base', type: 'raster', source: 'map' },
       ],
     },
-    center: [track[0][1], track[0][0]],
-    zoom: 13,
-    pitch: 55,
-    bearing: 0,
-    maxPitch: 80,
-    attributionControl: false,
-  });
+     center: [track[0][1], track[0][0]],
+     zoom: 13,
+     pitch: 55,
+     bearing: 0,
+     maxPitch: 80,
+     attributionControl: false,
+     // Video export reads the WebGL canvas after maplibre has rendered
+     // (drawImage + VideoFrame); without preserveDrawingBuffer those
+     // reads can race the compositor and capture blank frames.
+     preserveDrawingBuffer: true,
+   });
   flyoverMap.on('error', e => console.warn('maplibre:', e && e.error && e.error.message));
   flyoverMap.on('load', () => {
     flyoverMap.setTerrain({ source: 'dem', exaggeration: 1.2 });
@@ -572,49 +575,288 @@ function startFlyover(track, times, cum, totalM, climbBadges, getPois, activityI
     }
   }, { once: true });
 
-  // Server-side render: click download, the server spawns headless
-  // Chrome, renders every frame off-screen and assembles the MP4 with
-  // ffmpeg. We just poll the job and download when ready — nothing to
-  // watch, the tab can even be closed while it runs.
+  // In-page video export with WebCodecs: the browser's hardware H.264
+  // encoder records canvas frames to a real MP4 (muxed with mp4-muxer).
+  // Fully deterministic — a frame is grabbed only after every visible
+  // tile is loaded — so the export is frame-perfect and independent of
+  // wall-clock time. Falls back to the headless server render when
+  // VideoEncoder isn't available (old browsers).
   let recording = false;
   let pollTimer = null;
+  const EXPORT_FPS = 24;
 
-  recBtn.addEventListener('click', async () => {
-    if (recording) { clearTimeout(pollTimer); recording = false; recBtn.textContent = '⏺ Download video'; return; }
-    recording = true;
-    recBtn.textContent = '⏺ Queued…';
-    try {
-      const res = await fetch('/api/flyover-render/new', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ activity_id: activityId, seconds: 60 }),
-      });
-      const { id: renderId } = await res.json();
+  // TrailReplay-style settle: `idle` can fire while fallback tiles are
+  // still in flight (muddy frames); areTilesLoaded() is the honest
+  // signal, checked on both idle and a polling interval, with a
+  // timeout so one dead tile can't strand the export.
+  const settleFrame = (timeoutMs = 10000) => new Promise(resolve => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; flyoverMap.off('idle', onIdle); clearInterval(tick); resolve(); } };
+    const onIdle = () => { if (flyoverMap.areTilesLoaded()) finish(); };
+    const tick = setInterval(() => { if (flyoverMap.areTilesLoaded() && !flyoverMap.isMoving()) finish(); }, 50);
+    flyoverMap.on('idle', onIdle);
+    setTimeout(finish, timeoutMs);
+  });
 
-      const poll = async () => {
-        const st = await (await fetch(`/api/flyover-render/${renderId}`)).json();
-        if (st.error && st.status !== 'done') { throw new Error(st.error); }
-        if (st.status === 'done') {
-          const a = document.createElement('a');
-          a.href = st.video;
-          a.download = 'flyover.mp4';
-          a.click();
-          recBtn.textContent = '⏺ Download video';
-          recording = false;
-          return;
+  // Preload every tile the ride will need: walk the camera through the
+  // track at a coarse step and let each pose settle. The export loop
+  // then runs at memory speed instead of waiting on the network.
+  const preloadRoute = async (steps = 40) => {
+    recBtn.textContent = '⏺ Loading tiles…';
+    const saved = { center: flyoverMap.getCenter(), zoom: flyoverMap.getZoom(), bearing: flyoverMap.getBearing(), pitch: flyoverMap.getPitch() };
+    for (let s = 0; s <= steps; s++) {
+      const m = (totalM * s) / steps;
+      const cam = camLerpPos(indexAt(m));
+      flyoverMap.jumpTo({ center: [cam[1], cam[0], cam[2] + 60], zoom: saved.zoom, bearing: 0, pitch: saved.pitch });
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+      await settleFrame(4000);
+    }
+    flyoverMap.jumpTo(saved);
+  };
+
+  // Compose one export frame: map canvas + HUD + POI labels drawn onto a
+  // 2D canvas (the live overlays are DOM, invisible to the map canvas).
+  const composeFrame = (posM, showLabels) => {
+    const canvas = flyoverMap.getCanvas();
+    const off = document.createElement('canvas');
+    off.width = canvas.width; off.height = canvas.height;
+    const ctx = off.getContext('2d');
+    ctx.drawImage(canvas, 0, 0);
+    // HUD
+    const cam = camLerpPos(indexAt(posM));
+    ctx.fillStyle = 'rgba(0,0,0,.6)';
+    ctx.fillRect(8, 8, 310, 30);
+    ctx.fillStyle = '#fff';
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText((posM / 1000).toFixed(1) + ' km', 18, 28);
+    ctx.fillText(cam[2] != null ? Math.round(cam[2]) + ' m' : '—', 120, 28);
+    const climb = climbBadges.find(b => posM >= b.startM - 100 && posM <= b.endM + 100);
+    if (climb) { ctx.fillStyle = '#ffd700'; ctx.fillText('⛰ ' + climb.name, 180, 28); }
+    else { ctx.fillStyle = '#fff'; ctx.fillText(Math.round(posM / totalM * 100) + '%', 200, 28); }
+    // POI labels (same layout as the DOM version).
+    if (showLabels && getPois) {
+      const poisData = getPois() || {};
+      const size = flyoverMap.getContainer().getBoundingClientRect();
+      const items = [
+        ...((poisData.cities || [])).map(c => ({ name: c.name, lat: c.lat, lon: c.lon, kind: c.kind, alt: c.alt })),
+        ...((poisData.summits || [])).map(s => ({ name: '⛰ ' + s.name, lat: s.lat, lon: s.lon, kind: 'summit', alt: s.alt })),
+      ];
+      ctx.textAlign = 'center';
+      for (const it of items) {
+        const p = flyoverMap.project([it.lon, it.lat]);
+        if (p.x < -200 || p.x > size.width + 200 || p.y < -200 || p.y > size.height + 200) continue;
+        const color = it.kind === 'summit' ? '#ffd700' : '#e9ecef';
+        ctx.shadowColor = 'rgba(0,0,0,.9)'; ctx.shadowBlur = 4;
+        ctx.fillStyle = color;
+        ctx.font = '600 13px system-ui, sans-serif';
+        ctx.fillText(it.name, p.x, p.y - 26);
+        if (it.alt != null) {
+          ctx.font = '11px system-ui, sans-serif';
+          ctx.fillText(Math.round(it.alt) + ' m', p.x, p.y - 12);
         }
-        if (st.status === 'error') throw new Error(st.error || 'render failed');
-        const pct = st.total ? Math.round(st.frame / st.total * 100) : 0;
-        recBtn.textContent = `⏺ ${st.status} ${pct}%`;
-        pollTimer = setTimeout(poll, 1000);
+        ctx.font = '14px system-ui, sans-serif';
+        ctx.fillText('▼', p.x, p.y - 2);
+      }
+      ctx.shadowBlur = 0;
+      ctx.textAlign = 'left';
+    }
+    return off;
+  };
+
+  let encoder = null;
+  let muxer = null;
+
+  const canvasToVideoFrame = (canvas, timestampUs, frameNo) => new Promise(resolve => {
+    const vf = new VideoFrame(canvas, { timestamp: timestampUs });
+    encoder.encode(vf, { keyFrame: frameNo % (EXPORT_FPS * 2) === 0 });
+    vf.close();
+    if (encoder.encodeQueueSize < 8) resolve();
+    else {
+      const check = () => {
+        if (encoder.encodeQueueSize < 8) { encoder.removeEventListener?.('dequeue', check); resolve(); }
       };
-      poll().catch(err => {
-        alert('Render failed: ' + (err?.message || err));
+      encoder.addEventListener?.('dequeue', check);
+      // Safari may not fire dequeue events: poll as a safety net.
+      const t = setInterval(() => { if (encoder.encodeQueueSize < 8) { clearInterval(t); resolve(); } }, 10);
+    }
+  });
+
+  const exportWithWebCodecs = async () => {
+    // mp4-muxer from CDN (same library TrailReplay uses).
+    const { Muxer, ArrayBufferTarget } = await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/+esm');
+    const canvas = flyoverMap.getCanvas();
+    const W = canvas.width, H = canvas.height;
+    if (W % 2 || H % 2) throw new Error('canvas size must be even');
+    // H.264 profiles from High to Baseline: probe the encoder.
+    const codecs = ['avc1.640028', 'avc1.4D4028', 'avc1.42E01E'];
+    let config = null;
+    for (const codec of codecs) {
+      const probe = { codec, width: W, height: H, bitrate: 8_000_000, framerate: EXPORT_FPS, avc: { format: 'avc' } };
+      if ((await VideoEncoder.isConfigSupported(probe)).supported) { config = probe; break; }
+    }
+    if (!config) throw new Error('no H.264 encoder available');
+    muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: W, height: H }, fastStart: 'in-memory' });
+    let encodeErr = null;
+    // Sanity check before the long render: encode one throwaway frame and
+    // demand a decoderConfig on the first output chunk. Firefox ships
+    // VideoEncoder but emits chunks without metadata, which only blows up
+    // in muxer.finalize() after the whole video has been walked. Detect
+    // it here and fall back to the server render instead.
+    let firstMeta = null;
+    encoder = new VideoEncoder({
+      output: (chunk, meta) => {
+        if (!firstMeta) firstMeta = meta;
+        if (!encodeErr) muxer.addVideoChunk(chunk, meta);
+      },
+      error: e => { encodeErr = e; },
+    });
+    encoder.configure(config);
+    {
+      const probe = document.createElement('canvas');
+      probe.width = 16; probe.height = 16;
+      const pctx = probe.getContext('2d');
+      pctx.fillStyle = '#000'; pctx.fillRect(0, 0, 16, 16);
+      const vf = new VideoFrame(probe, { timestamp: 0 });
+      encoder.encode(vf, { keyFrame: true });
+      vf.close();
+      await encoder.flush();
+      if (!firstMeta || !firstMeta.decoderConfig) {
+        try { encoder.close(); } catch (e) { /* already closed */ }
+        throw new Error('WebCodecs encoder does not emit decoder metadata in this browser');
+      }
+      // Reset for the real render: the probe chunk is already in the
+      // muxer's timeline, so rebuild both encoder and muxer.
+      encoder = new VideoEncoder({
+        output: (chunk, meta) => { if (!encodeErr) muxer.addVideoChunk(chunk, meta); },
+        error: e => { encodeErr = e; },
+      });
+      encoder.configure(config);
+    }
+
+    const wasPlaying = playing;
+    if (wasPlaying) pause();
+    playBtn.disabled = true;
+    progress.disabled = true;
+    speedSel.disabled = true;
+
+    try {
+      await preloadRoute();
+
+      // Export length: the whole ride in `mPerSec1x` seconds by default
+      // (~60 s); a ?export_seconds= URL param overrides it for testing.
+      const exportSecs = parseFloat(new URLSearchParams(location.search).get('export_seconds')) || (totalM / mPerSec1x);
+      const rideFrames = Math.max(2, Math.round(EXPORT_FPS * exportSecs));
+      const finaleFrames = FINALE_S * EXPORT_FPS;
+      const totalFrames = rideFrames + finaleFrames;
+
+      // --- ride phase ---
+      smoothBearing = null;
+      posM = 0;
+      for (let f = 0; f < rideFrames; f++) {
+        if (encodeErr) throw encodeErr;
+        posM = (totalM * f) / (rideFrames - 1);
+        updateCamera(indexAt(posM));
+        await settleFrame();
+        const frame = composeFrame(posM, f < rideFrames - 1);
+        await canvasToVideoFrame(frame, Math.round(f / EXPORT_FPS * 1e6), f);
+        recBtn.textContent = `⏺ Recording ${Math.round((f + 1) / totalFrames * 100)}%`;
+      }
+
+      // --- finale phase (same camera math as the live finale) ---
+      const lats = track.map(p => p[0]), lons = track.map(p => p[1]);
+      const cur = { center: flyoverMap.getCenter(), zoom: flyoverMap.getZoom(), pitch: flyoverMap.getPitch(), bearing: flyoverMap.getBearing() };
+      flyoverMap.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]],
+        { padding: 80, pitch: 30, bearing: cur.bearing, duration: 0 });
+      const target = { center: flyoverMap.getCenter(), zoom: flyoverMap.getZoom(), pitch: flyoverMap.getPitch() };
+      flyoverMap.jumpTo(cur);
+      labelLayer.style.display = 'none';
+      for (let f = 0; f < finaleFrames; f++) {
+        if (encodeErr) throw encodeErr;
+        const e = 1 - Math.pow(1 - f / (finaleFrames - 1), 3);
+        flyoverMap.jumpTo({
+          center: [cur.center.lng + (target.center.lng - cur.center.lng) * e,
+                   cur.center.lat + (target.center.lat - cur.center.lat) * e],
+          zoom: cur.zoom + (target.zoom - cur.zoom) * e,
+          pitch: cur.pitch + (target.pitch - cur.pitch) * e,
+          bearing: cur.bearing,
+        });
+        await settleFrame();
+        const frame = composeFrame(totalM, false);
+        await canvasToVideoFrame(frame, Math.round((rideFrames + f) / EXPORT_FPS * 1e6), rideFrames + f);
+        recBtn.textContent = `⏺ Recording ${Math.round((rideFrames + f + 1) / totalFrames * 100)}%`;
+      }
+      labelLayer.style.display = '';
+
+      await encoder.flush();
+      muxer.finalize();
+      const { buffer } = muxer.target;
+      const blob = new Blob([buffer], { type: 'video/mp4' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'flyover.mp4';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } finally {
+      playBtn.disabled = false;
+      progress.disabled = false;
+      speedSel.disabled = false;
+      if (wasPlaying) play();
+    }
+  };
+
+  const startServerRender = async () => {
+    const res = await fetch('/api/flyover-render/new', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activity_id: activityId, seconds: 60 }),
+    });
+    const { id: renderId } = await res.json();
+    const poll = async () => {
+      const st = await (await fetch(`/api/flyover-render/${renderId}`)).json();
+      if (st.status === 'done') {
+        const a = document.createElement('a');
+        a.href = st.video;
+        a.download = 'flyover.mp4';
+        a.click();
         recBtn.textContent = '⏺ Download video';
         recording = false;
-      });
+        return;
+      }
+      if (st.status === 'error') throw new Error(st.error || 'render failed');
+      const pct = st.total ? Math.round(st.frame / st.total * 100) : 0;
+      recBtn.textContent = `⏺ ${st.status} ${pct}%`;
+      pollTimer = setTimeout(poll, 1000);
+    };
+    poll().catch(err => {
+      alert('Render failed: ' + (err?.message || err));
+      recBtn.textContent = '⏺ Download video';
+      recording = false;
+    });
+  };
+
+  recBtn.addEventListener('click', async () => {
+    if (recording) return;
+    recording = true;
+    recBtn.textContent = '⏺ Starting…';
+    try {
+      if (window.VideoEncoder && window.VideoFrame) {
+        try {
+          await exportWithWebCodecs();
+          return;
+        } catch (err) {
+          // Some browsers expose VideoEncoder but can't produce a
+          // muxable stream (e.g. Firefox without chunk metadata), and
+          // any in-page export can also fail mid-way. Either way, fall
+          // back to the headless server render rather than giving up.
+          console.warn('WebCodecs export failed, falling back to server render:', err);
+          try { encoder?.close(); } catch (e) { /* ignore */ }
+        }
+      }
+      await startServerRender();
     } catch (err) {
-      alert('Could not start render: ' + (err?.message || err));
+      alert('Export failed: ' + (err?.message || err));
+    } finally {
       recBtn.textContent = '⏺ Download video';
       recording = false;
     }

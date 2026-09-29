@@ -1,4 +1,5 @@
 import { fetchStats } from '../utils/api.js';
+import { attachFullscreen } from '../utils/fullscreen.js';
 import { fmtDate, fmtDuration, fmtDistance, fmtElevation, fmtHr, fmtSpeed, climbKey } from '../utils/format.js';
 
 let statsData = null;
@@ -74,6 +75,7 @@ export async function renderStatistics() {
         </div>
         <div id="stats-summary"></div>
         <div id="stats-records"></div>
+        <div id="stats-profile"></div>
         <div id="stats-charts"></div>
         <div id="stats-climbs"></div>
       </div>
@@ -108,8 +110,259 @@ function renderAll() {
   });
   renderSummary();
   renderRecords();
+  renderProfile();
   renderCharts();
   renderClimbs();
+  attachFullscreenToStats();
+}
+
+// Fullscreen for every stats chart: the chart canvas's sized wrapper div
+// is floated, Chart.js responsive handles the resize.
+function attachFullscreenToStats() {
+  const ids = ['stats-profile-chart', 'stats-monthly-chart', 'stats-count-chart',
+    'stats-load-chart', 'stats-categories-chart'];
+  for (const id of ids) {
+    const canvas = document.getElementById(id);
+    if (!canvas || !canvas.parentElement) continue;
+    const card = canvas.closest('.card');
+    if (card && card.querySelector('.card-header')) {
+      attachFullscreen(card, canvas.parentElement);
+    } else {
+      // Categories chart: no card header — put the button on its h6 heading.
+      const head = canvas.previousElementSibling;
+      if (head) attachFullscreen(null, canvas.parentElement, { headerEl: head });
+    }
+  }
+  // HR zones + trend share one card with two charts: one button covering the row.
+  const zones = document.getElementById('stats-zones-chart');
+  const row = zones && zones.closest('.row');
+  if (row) {
+    attachFullscreen(zones.closest('.card'), row, {
+      onResize: (el) => {
+        // The two chart wrappers carry fixed inline heights; stretch them to
+        // fill the fullscreen holder.
+        const inFs = !!el.closest('.fs-overlay');
+        for (const w of el.querySelectorAll(':scope > div > div')) {
+          if (inFs) { w.dataset.fsH = w.style.height || ''; w.style.height = '100%'; }
+          else w.style.height = w.dataset.fsH ?? '';
+        }
+        window.Chart.getChart('stats-zones-chart')?.resize();
+        window.Chart.getChart('stats-hr-trend-chart')?.resize();
+      }
+    });
+  }
+}
+
+let profileChart = null;
+
+// Climbing profile: how hard you can climb vs how long the effort lasts.
+// Each point is one climb: x = duration, y = VAM (vertical metres per hour).
+// The fitted curve VAM = V0 + K/T^b on the robust per-band envelope is the
+// climbing equivalent of a power-duration curve. The lower envelope
+// (steady-pace floor) completes the picture: Climbfinder-style, your rides
+// live between "what you can do" and "what you normally do".
+function renderProfile() {
+  const el = document.getElementById('stats-profile');
+  const occ = statsData.climb_occurrences || [];
+  const pts = [];
+  for (const o of occ) {
+    const T = o.elapsed_time_s, v = o.vam, H = o.elevation_gain_m, D = o.length_m;
+    if (!T || !v || !H || !D) continue;
+    if (T < 120 || T > 3 * 3600 || H < 50 || D < 500) continue;
+    pts.push({ t: T / 60, vam: v, name: o.validated_name || o.key, when: o.start_time || '' });
+  }
+  pts.sort((a, b) => (a.when < b.when ? -1 : 1));
+
+  el.innerHTML = `
+    <div class="card mb-3">
+      <div class="card-header fw-semibold">Climbing profile — VAM vs duration</div>
+      <div class="card-body">
+        <p class="text-muted small mb-2">
+          Every climb you have done (≥50 m ascent, ≥2 min) as a dot: how fast you
+          climbed vertically (VAM) against how long it took. The red curve is your
+          <strong>envelope</strong> — the VAM you can reach on a best effort — and the
+          grey curve your <strong>steady pace</strong> floor. Like a power curve, but
+          for climbing. Compare periods with the buttons above the chart.
+        </p>
+        <div style="height: 320px"><canvas id="stats-profile-chart"></canvas></div>
+      </div>
+    </div>`;
+
+  if (pts.length < 3) return;
+
+  const BANDS = [
+    { lo: 2, hi: 5 }, { lo: 5, hi: 10 }, { lo: 10, hi: 20 },
+    { lo: 20, hi: 40 }, { lo: 40, hi: 90 }, { lo: 90, hi: 240 },
+  ];
+
+  const pctile = (vs, p) => {
+    const s = [...vs].sort((a, b) => a - b);
+    const k = (s.length - 1) * p, f = Math.floor(k);
+    return s[f] + (s[Math.min(f + 1, s.length - 1)] - s[f]) * (k - f);
+  };
+
+  // Envelope: 90th percentile VAM per duration band — robust to one freak
+  // climb, tracks fitness better than a raw max. Steady floor: 25th pctile.
+  const bandPts = (list, p) => {
+    const out = [];
+    for (const b of BANDS) {
+      const inBand = list.filter(q => q.t >= b.lo && q.t < b.hi);
+      if (inBand.length >= 2) out.push({ t: (b.lo + b.hi) / 2, vam: pctile(inBand.map(q => q.vam), p) });
+    }
+    return out;
+  };
+
+  // Critical-power style fit: VAM = V0 + K/T^b. Flattens to a nonzero
+  // sustainable VAM instead of decaying to 0. Grid search over the exponent
+  // b, V0 and K solved by linear regression per b; needs V0 > 0, K > 0.
+  const fitCp = (data) => {
+    if (data.length < 3) return null;
+    const n = data.length;
+    let bestSse = null, bestCp = null;
+    for (let b100 = 30; b100 <= 400; b100 += 2) {
+      const bExp = b100 / 100;
+      let sx = 0, sy = 0, sxx = 0, sxy = 0;
+      for (const p of data) {
+        const x = Math.pow(p.t, -bExp), y = p.vam;
+        sx += x; sy += y; sxx += x * x; sxy += x * y;
+      }
+      const den = n * sxx - sx * sx;
+      if (den <= 1e-12) continue;
+      const K = (n * sxy - sx * sy) / den;
+      const V0 = (sy - K * sx) / n;
+      if (K <= 0 || V0 <= 0) continue;
+      let sse = 0;
+      for (const p of data) {
+        const e = p.vam - (V0 + K * Math.pow(p.t, -bExp));
+        sse += e * e;
+      }
+      if (bestSse == null || sse < bestSse) { bestSse = sse; bestCp = { V0, K, b: bExp }; }
+    }
+    return bestCp;
+  };
+
+  const scope = period === 'all' ? pts : pts.filter(p => inMonth(p.when, periodRange(monthKey(statsData.activities[statsData.activities.length - 1].start_time))));
+  const env = fitCp(bandPts(scope, 0.9));
+  const floor = fitCp(bandPts(scope, 0.25));
+  // Trend: envelope fit on the chronologically first vs last third of the
+  // scoped history — shows whether your capability improved or declined.
+  let trendUp = null, trendDown = null, trendPct = null;
+  if (scope.length >= 12) {
+    const third = Math.floor(scope.length / 3);
+    const early = fitCp(bandPts(scope.slice(0, third), 0.9));
+    const late = fitCp(bandPts(scope.slice(-third), 0.9));
+    if (early && late && early.V0 > 0) {
+      trendUp = late; trendDown = early;
+      trendPct = ((late.V0 - early.V0) / early.V0) * 100;
+    }
+  }
+
+  const curveData = (fit, tMin, tMax, nPts = 60) => {
+    const out = [];
+    if (!fit) return out;
+    for (let i = 0; i <= nPts; i++) {
+      const t = tMin * Math.pow(tMax / tMin, i / nPts);
+      out.push({ x: t, y: fit.V0 + fit.K / Math.pow(t, fit.b) });
+    }
+    return out;
+  };
+  const tMin = Math.max(2, Math.min(...pts.map(p => p.t)));
+  const tMax = Math.max(...pts.map(p => p.t));
+
+  const ctx = document.getElementById('stats-profile-chart').getContext('2d');
+  if (profileChart) profileChart.destroy();
+  const scatter = (color, data, label, extra = {}) => ({
+    type: 'scatter', label, data,
+    backgroundColor: color, pointRadius: 4, pointHoverRadius: 6, ...extra
+  });
+
+  const trendLabel = trendUp
+    ? `Recent form (sustainable VAM ${trendPct >= 0 ? '+' : ''}${trendPct.toFixed(0)}% vs early years)`
+    : null;
+
+  // Alternating background bands so the duration bands are readable.
+  // Drawn in a beforeDraw plugin: afterBuildTicks fires too early and the
+  // chart render wipes anything drawn there.
+  const bandBackground = {
+    id: 'bandBackground',
+    beforeDraw(chart) {
+      const { ctx: ctx2, chartArea, scales: { x } } = chart;
+      if (!chartArea) return;
+      // Theme-aware band tints: lighten on dark themes, darken on light ones.
+      const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+      const tints = dark
+        ? ['rgba(255, 255, 255, 0.10)', 'rgba(255, 255, 255, 0.04)']
+        : ['rgba(0, 0, 0, 0.10)', 'rgba(0, 0, 0, 0.04)'];
+      ctx2.save();
+      let bandIndex = 0;
+      for (const b of BANDS) {
+        const x1 = Math.max(x.getPixelForValue(b.lo), chartArea.left);
+        const x2 = Math.min(x.getPixelForValue(Math.min(b.hi, x.max)), chartArea.right);
+        if (x2 <= chartArea.left) continue;
+        ctx2.fillStyle = tints[bandIndex % 2];
+        ctx2.fillRect(x1, chartArea.top, x2 - x1, chartArea.bottom - chartArea.top);
+        bandIndex++;
+      }
+      ctx2.restore();
+    }
+  };
+
+  profileChart = new window.Chart(ctx, {
+    type: 'scatter',
+    data: {
+      datasets: [
+        ...(env ? [{
+          type: 'line', label: `Envelope — best effort (sustainable ≈ ${Math.round(env.V0)} m/h)`,
+          data: curveData(env, tMin, tMax),
+          borderColor: 'rgba(220, 53, 69, 0.9)', backgroundColor: 'transparent',
+          pointRadius: 0, borderWidth: 2, tension: 0
+        }] : []),
+        ...(floor ? [{
+          type: 'line', label: 'Steady-pace floor',
+          data: curveData(floor, tMin, tMax),
+          borderColor: 'rgba(108, 117, 125, 0.8)', backgroundColor: 'transparent',
+          borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5, tension: 0
+        }] : []),
+        ...(trendUp ? [{
+          type: 'line', label: trendLabel,
+          data: curveData(trendUp, tMin, tMax),
+          borderColor: trendPct >= 0 ? 'rgba(25, 135, 84, 0.9)' : 'rgba(255, 193, 7, 0.9)',
+          backgroundColor: 'transparent', borderDash: [2, 3], pointRadius: 0, borderWidth: 1.5, tension: 0
+        }] : []),
+        scatter('rgba(13, 110, 253, 0.45)', pts.map(p => ({ x: p.t, y: p.vam })), 'All climbs'),
+        ...(scope.length && scope.length < pts.length ? [scatter('rgba(13, 110, 253, 0.9)', scope.map(p => ({ x: p.t, y: p.vam })), 'Selected period', { pointRadius: 5 })] : []),
+      ].filter(Boolean),
+    },
+    plugins: [bandBackground],
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: { labels: { boxWidth: 12, usePointStyle: false } },
+        tooltip: {
+          callbacks: {
+            label: (c) => {
+              const m = Math.round(c.parsed.x);
+              const h = Math.floor(m / 60);
+              const label = h ? `${h}h${String(m % 60).padStart(2, '0')}m` : `${m}m`;
+              return `${c.dataset.label}: ${label} at ${Math.round(c.parsed.y)} m/h`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'logarithmic', min: 2,
+          title: { display: true, text: 'Climb duration (minutes, log scale)' },
+          ticks: { callback: (v) => ([2, 5, 10, 20, 60, 120, 240].includes(+v) ? v : null) }
+        },
+        y: {
+          title: { display: true, text: 'VAM (vertical m/hour)' },
+          beginAtZero: true
+        },
+      }
+    }
+  });
 }
 
 function delta(current, previous) {
@@ -214,9 +467,26 @@ function renderRecords() {
   }, null);
 
   const longest = best(a => a.distance);
-  const climbing = best(a => a.ascent);
+  // Biggest ascent = the single biggest climb segment in the period
+  // (not the ride's total elevation gain). Filter out noise segments:
+  // anything under 50 m of gain is usually GPS wobble.
+  const biggestAscentOcc = statsData.climb_occurrences
+    .filter(o => inMonth(o.start_time, range) && (o.elevation_gain_m || 0) >= 50)
+    .sort((a, b) => b.elevation_gain_m - a.elevation_gain_m)[0] || null;
   const fastest = best(a => (a.distance >= 20 && a.avg_speed) ? a.avg_speed : null);
   const maxHr = best(a => a.max_hr);
+  // Biggest climbing day: ascent summed over every ride of the same
+  // calendar date (a double day can beat any single ride).
+  const byDay = {};
+  for (const a of inPeriod) {
+    const d = (a.start_time || '').slice(0, 10);
+    if (!d) continue;
+    byDay[d] = (byDay[d] || 0) + (a.ascent || 0);
+  }
+  const bestDayEntry = Object.entries(byDay).sort((a, b) => b[1] - a[1])[0];
+  const climbing = bestDayEntry
+    ? { a: inPeriod.find(a => (a.start_time || '').slice(0, 10) === bestDayEntry[0]), v: bestDayEntry[1] }
+    : null;
   const climbsPerRide = {};
   for (const o of statsData.climb_occurrences) {
     if (inMonth(o.start_time, range)) climbsPerRide[o.activity_id] = (climbsPerRide[o.activity_id] || 0) + 1;
@@ -237,6 +507,12 @@ function renderRecords() {
 
   const rows = [
     longest && { label: 'Longest ride', a: longest.a, text: fmtDistance(longest.v) },
+    biggestAscentOcc && {
+      label: 'Biggest ascent',
+      a: { activity_id: biggestAscentOcc.activity_id },
+      text: `${fmtElevation(biggestAscentOcc.elevation_gain_m)} · ${escapeHtml(biggestAscentOcc.validated_name || biggestAscentOcc.category || 'Unnamed climb')}`,
+      climbKey: climbKey(biggestAscentOcc.activity_id, biggestAscentOcc.start_distance_m, biggestAscentOcc.end_distance_m),
+    },
     climbing && { label: 'Biggest climbing day', a: climbing.a, text: fmtElevation(climbing.v) },
     fastest && { label: 'Fastest avg speed (20 km+)', a: fastest.a, text: fmtSpeed(fastest.v) },
     maxHr && { label: 'Max heart rate', a: maxHr.a, text: fmtHr(maxHr.v) },

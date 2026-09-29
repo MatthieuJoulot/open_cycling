@@ -1,4 +1,5 @@
 import { fetchClimbDb } from '../utils/api.js';
+import { attachFullscreen } from '../utils/fullscreen.js';
 import { fmtElevation } from '../utils/format.js';
 import { renderNav } from '../components/nav.js';
 
@@ -49,6 +50,7 @@ export async function renderExplore() {
     </div>
     <div id="explore-map-wrap" class="d-none">
       <div class="card mb-3">
+        <div class="card-header fw-semibold">Famous climbs map</div>
         <div class="card-body p-0">
           <div id="explore-map" style="height: 75vh; border-radius: .375rem;"></div>
         </div>
@@ -108,6 +110,9 @@ function setExploreView(view) {
   listWrap.classList.toggle('d-none', view !== 'list');
   mapWrap.classList.toggle('d-none', view !== 'map');
   if (view === 'map') renderExploreMap();
+  if (view === 'map') attachFullscreen(document.getElementById('explore-map')?.closest('.card'), document.getElementById('explore-map'), {
+    onResize: () => { if (exploreMap) exploreMap.invalidateSize(); }
+  });
 }
 
 async function renderExploreMap() {

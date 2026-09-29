@@ -1,4 +1,5 @@
 import { fetchClimbs, fetchAllClimbNames, fetchClimbGroups, fetchRegions, fetchHeatmap, saveSegment, deleteSegment } from '../utils/api.js';import { fmtDate, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, climbKey } from '../utils/format.js';
+import { attachFullscreen } from '../utils/fullscreen.js';
 
 let allClimbs = [];
 let allNames = {};
@@ -28,6 +29,8 @@ export async function renderClimbs() {
                 <option value="length-desc">Longest first</option>
                 <option value="ascent-desc">Most ascent</option>
                 <option value="times-desc">Most times done</option>
+                <option value="validated-first">Validated first</option>
+                <option value="unvalidated-first">Not validated first</option>
               </select>
             </div>
             <div class="col-md-3">
@@ -70,6 +73,7 @@ export async function renderClimbs() {
               <th>Ascent</th>
               <th>Avg grade</th>
               <th>Max grade</th>
+              <th title="Difficulty score (list version: no summit-altitude bonus)">Difficulty</th>
               <th>Done</th>
               <th>Action</th>
             </tr>
@@ -79,6 +83,7 @@ export async function renderClimbs() {
       </div>
       <div id="climbs-map-wrap" class="d-none">
         <div class="card mb-3">
+          <div class="card-header fw-semibold">Climbs map</div>
           <div class="card-body p-0">
             <div id="climbs-map" style="height: 70vh; border-radius: .375rem;"></div>
           </div>
@@ -87,12 +92,12 @@ export async function renderClimbs() {
       </div>
       <div id="climbs-heat-wrap" class="d-none">
         <div class="card mb-3">
+          <div class="card-header fw-semibold">Ride heatmap</div>
           <div class="card-body p-0">
             <div id="climbs-heat" style="height: 70vh; border-radius: .375rem;"></div>
           </div>
         </div>
         <p class="small text-muted">Roads you have ridden most, by GPS pass frequency. Brighter = more passages.</p>
-      <p class="small text-muted mb-0">Tip: the heatmap reads best in dark mode — toggle ◐ in the navbar.</p>
       </div>
       <p id="no-climbs" class="text-muted d-none">No climbs found.</p>
     </div>
@@ -174,6 +179,12 @@ function setView(view) {
   heatBtn.classList.toggle('active', view === 'heat');
   if (view === 'map') renderClimbsMap();
   if (view === 'heat') renderHeatmap();
+  if (view === 'map') attachFullscreen(document.getElementById('climbs-map')?.closest('.card'), document.getElementById('climbs-map'), {
+    onResize: () => { if (climbsMap) climbsMap.invalidateSize(); }
+  });
+  if (view === 'heat') attachFullscreen(document.getElementById('climbs-heat')?.closest('.card'), document.getElementById('climbs-heat'), {
+    onResize: () => { if (heatMap) heatMap.invalidateSize(); }
+  });
   if (view === 'list' && climbsMap) climbsMap.invalidateSize();
 }
 
@@ -417,11 +428,15 @@ function flattenClimbs(activities) {
 }
 
 function sortClimbs(list, sort) {
+  const isVal = c => c.validated_climb_id ? 1 : 0;
+  const f = c => fietsList(c) || 0;
   return list.slice().sort((a, b) => {
+    if (sort === 'validated-first') return isVal(b) - isVal(a) || new Date(b.lastClimbed || 0) - new Date(a.lastClimbed || 0);
+    if (sort === 'unvalidated-first') return isVal(a) - isVal(b) || new Date(b.lastClimbed || 0) - new Date(a.lastClimbed || 0);
     if (sort === 'date-desc') return new Date(b.lastClimbed || 0) - new Date(a.lastClimbed || 0);
     if (sort === 'date-asc') return new Date(a.lastClimbed || 0) - new Date(b.lastClimbed || 0);
     if (sort === 'name-asc') return (a.name || '').localeCompare(b.name || '');
-    if (sort === 'difficulty-desc') return (b.elevation_gain_m || 0) - (a.elevation_gain_m || 0);
+    if (sort === 'difficulty-desc') return f(b) - f(a);
     if (sort === 'length-desc') return (b.length_m || 0) - (a.length_m || 0);
     if (sort === 'ascent-desc') return (b.elevation_gain_m || 0) - (a.elevation_gain_m || 0);
     if (sort === 'times-desc') return (b.groupSize || 0) - (a.groupSize || 0);
@@ -533,10 +548,19 @@ function onRegionToggle(e) {
   }
 }
 
+// Difficulty score (list variant, based on the FIETS index): H²/(D×10)
+// without the summit bonus, since the climbs list has no per-climb
+// summit altitude. Same scale as the full score on the detail page.
+function fietsList(c) {
+  const H = c.elevation_gain_m || 0, D = c.length_m || 0;
+  if (H <= 0 || D <= 0) return null;
+  return H * H / (D * 10);
+}
+
 function buildClimbRow(c) {
   const row = document.createElement('tr');
   row.innerHTML = `
-    <td><a href="#climb/${c.key}" class="text-decoration-none">${c.name ? escapeHtml(c.name) : '<span class="text-muted">Unnamed segment</span>'}</a></td>
+    <td><a href="#climb/${c.key}" class="text-decoration-none">${c.name ? escapeHtml(c.name) : '<span class="text-muted">Unnamed segment</span>'}</a>${c.validated_climb_id ? ' <span class="badge bg-success rounded-pill" title="Validated climb">✓</span>' : ''}</td>
     <td>${escapeHtml(c.region || '—')}</td>
     <td><a href="#activity/${c.activityId}" class="text-decoration-none">${fmtDate(c.startTime)}</a></td>
     <td><span class="badge bg-secondary category-badge">${c.category}</span></td>
@@ -544,6 +568,7 @@ function buildClimbRow(c) {
     <td>${fmtElevation(c.elevation_gain_m)}</td>
     <td>${fmtGrade(c.avg_grade_percent)}</td>
     <td>${fmtGrade(c.max_grade_percent)}</td>
+    <td>${fietsList(c) != null ? fietsList(c).toFixed(1) : '—'}</td>
     <td>${c.groupSize || 1}</td>
     <td>
       <button class="btn btn-sm btn-link py-0 modify-segment-btn" data-activity-id="${c.activityId}" data-start="${c.start_distance_m}" data-end="${c.end_distance_m}" title="Modify segment">✎</button>

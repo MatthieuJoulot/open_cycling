@@ -1,5 +1,6 @@
-import { fetchClimbMatches, fetchAllClimbNames, fetchActivityRecords, saveClimbName, validateClimb, fetchValidatedClimbs } from '../utils/api.js';
+import { fetchClimbMatches, fetchAllClimbNames, fetchActivityRecords, saveClimbName, validateClimb, fetchValidatedClimbs, fetchStats } from '../utils/api.js';
 import { openSegmentEditor } from '../components/segmentEditor.js?v=2';
+import { attachFullscreen } from '../utils/fullscreen.js';
 import { fmtDate, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr, climbKey, pyRound } from '../utils/format.js';
 
 let currentSegment = [];
@@ -23,7 +24,6 @@ export async function renderClimb(key) {
   const app = document.getElementById('app');
   app.innerHTML = `
     <div id="climb-view">
-      <a href="#feed" class="text-decoration-none small">← Back to feed</a>
       <div class="d-flex align-items-center gap-2 mt-2 mb-3">
         <h3 id="climb-title" class="mb-0">Climb</h3>
         <button id="edit-climb-name-btn" class="btn btn-sm btn-link py-0" title="Edit name">✎</button>
@@ -104,13 +104,19 @@ export async function renderClimb(key) {
   const title = document.getElementById('climb-title');
   title.textContent = validatedName || nameEntry?.name || `Climb on ${members[0] ? fmtDate(members[0].start_time) : 'unknown ride'}`;
 
-  renderStats(members, matches.count);
+  // Altitude stat needs the segment records, so render details first.
   await renderSegmentDetails(members);
+  renderStats(members, matches.count);   // async: fills in the prediction
   setupModifySegmentButton(members);
   setupClimbNameEdit(key, nameEntry);
   await setupClimbValidate(key, nameEntry, members);
   renderPerfChart(members);
   renderPerformances(members);
+  attachFullscreen(document.getElementById('climb-map')?.closest('.card'), document.getElementById('climb-map'), {
+    onResize: (el) => { if (el._climbMap) el._climbMap.invalidateSize(); }
+  });
+  attachFullscreen(document.getElementById('climb-elevation-chart')?.closest('.card'), document.getElementById('climb-elevation-chart')?.closest('.card-body'));
+  attachFullscreen(document.getElementById('climb-perf-chart')?.closest('.card'), document.getElementById('climb-perf-chart')?.closest('.card'), { floatCard: true });
 
   const metricSelect = document.getElementById('perf-metric');
   if (metricSelect) {
@@ -261,6 +267,8 @@ function setupModifySegmentButton(members) {
         endDistanceM: rep.end_distance_m,
         onSave: null,
       });
+      // Cancelled: the editor resolves to null — nothing was saved.
+      if (!saved) return;
       // Navigate to the new segment key (same activity, new start/end) so the
       // page reflects the modified segment instead of the stale one.
       const newKey = climbKey(rep.activity_id, saved.start_distance_m, saved.end_distance_m);
@@ -287,6 +295,7 @@ function renderSegmentMap(container, segment) {
   if (points.length < 2) return;
 
   const map = L.map(container);
+  container._climbMap = map;
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(map);
@@ -294,6 +303,76 @@ function renderSegmentMap(container, segment) {
   L.circleMarker(points[0], { radius: 7, color: '#ffffff', fillColor: '#198754', fillOpacity: 1, weight: 2 }).addTo(map).bindPopup('Start');
   L.circleMarker(points[points.length - 1], { radius: 7, color: '#ffffff', fillColor: '#dc3545', fillOpacity: 1, weight: 2 }).addTo(map).bindPopup('Finish');
   map.fitBounds(points, { padding: [20, 20] });
+}
+
+// --- Time prediction ---------------------------------------------------
+// Predicts how long a climb would take based on the rider's own history:
+// a power-law fit of elapsed time against ascent and length over every
+// quality climb occurrence (the /api/stats dataset), computed at most
+// once per session.
+//
+//   ln(T) = a + b·ln(H) + c·ln(D)
+//
+// Fitted on the user's real climbs with R² ≈ 0.92 — a personal
+// equivalent of Climbfinder's generic predictions.
+let timeModelPromise = null;
+
+function fitTimeModel(occurrences) {
+  const X = [], Y = [];
+  for (const o of occurrences) {
+    const H = o.elevation_gain_m, D = o.length_m, T = o.elapsed_time_s;
+    if (!H || !D || !T || H < 30 || D < 300 || T < 60 || T > 7200) continue;
+    X.push([1, Math.log(H), Math.log(D)]);
+    Y.push(Math.log(T));
+  }
+  if (X.length < 20) return null;
+  const n = 3;
+  const A = [[0,0,0],[0,0,0],[0,0,0]], B = [0,0,0];
+  for (let k = 0; k < X.length; k++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) A[i][j] += X[k][i] * X[k][j];
+      B[i] += X[k][i] * Y[k];
+    }
+  }
+  // Gauss-Jordan with partial pivoting.
+  const M = A.map((row, i) => row.concat([B[i]]));
+  for (let col = 0; col < n; col++) {
+    let piv = col;
+    for (let r = col + 1; r < n; r++) if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+    [M[col], M[piv]] = [M[piv], M[col]];
+    const pv = M[col][col];
+    if (Math.abs(pv) < 1e-12) return null;
+    for (let j = 0; j <= n; j++) M[col][j] /= pv;
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = M[r][col];
+      for (let j = 0; j <= n; j++) M[r][j] -= f * M[col][j];
+    }
+  }
+  const [a, b, c] = M.map(row => row[n]);
+  return { predict: (H, D) => Math.exp(a) * Math.pow(H, b) * Math.pow(D, c), n: X.length };
+}
+
+async function getTimeModel() {
+  if (!timeModelPromise) {
+    timeModelPromise = fetchStats()
+      .then(d => fitTimeModel(d.climb_occurrences || []))
+      .catch(() => null);
+  }
+  return timeModelPromise;
+}
+
+// Difficulty score (based on the FIETS index from the Dutch cycling
+// magazine Fiets): rewards steep, sustained climbing and adds a bonus
+// for high summits.
+//   score = H² / (D×10) + max(0, (T−1000)/1000)
+// with H = ascent (m), D = length (m), T = summit altitude (m).
+// Tourmalet ≈ 10.4, Mauna Kea (world's hardest) ≈ 28.9, small hill ≈ 0.5.
+function fietsScore(ascentM, lengthM, summitAltM) {
+  if (!ascentM || !lengthM || ascentM <= 0 || lengthM <= 0) return null;
+  const base = (ascentM * ascentM) / (lengthM * 10);
+  const bonus = Math.max(0, (summitAltM - 1000) / 1000);
+  return base + bonus;
 }
 
 function gradeColor(grade) {
@@ -429,12 +508,20 @@ function renderSegmentElevation(segment, startDistanceM) {
       responsive: true,
       maintainAspectRatio: false,
       parsing: false,
+      // Space between the lowest curve point and the x-axis so the grade
+      // labels painted under the curve never clip against the axis.
+      layout: { padding: { bottom: 28 } },
       plugins: {
         legend: { display: false },
         tooltip: {
           callbacks: {
             title: items => `km ${items[0].parsed.x.toFixed(2)}`,
-            label: item => `${item.raw.y.toFixed(0)} m`
+            label: item => {
+              const midX = item.parsed.x;
+              const b = (buckets || []).find(bb => midX >= bb.startDistKm && midX <= bb.endDistKm);
+              const gradeLine = b ? ` · grade ${b.grade.toFixed(1)}%` : '';
+              return `${item.raw.y.toFixed(0)} m${gradeLine}`;
+            }
           }
         },
         segmentZones: { buckets, segment, startDistanceM }
@@ -502,7 +589,6 @@ function renderSegmentElevation(segment, startDistanceM) {
         ctx.save();
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillStyle = '#212529';
         for (const b of buckets) {
           if (b.startIdx === b.endIdx || b.startIdx < 0) continue;
           const startX = x.getPixelForValue(b.startDistKm);
@@ -520,7 +606,18 @@ function renderSegmentElevation(segment, startDistanceM) {
           if (count === 0) continue;
           const midX = (startX + endX) / 2;
           const curveY = y.getPixelForValue(sumAlt / count);
-          const midY = (curveY + chartArea.bottom) / 2;
+          // Place the label below the curve, clamped into the reserved
+          // gap under the chart so it never clips into the x-axis.
+          const midY = Math.min((curveY + chartArea.bottom) / 2, chartArea.bottom - 12);
+          // Contrast-aware text color: white text on dark zone fills,
+          // dark text on light ones, so grades stay readable on every
+          // grade color in both themes.
+          const zone = gradeColor(b.grade);
+          const rr = parseInt(zone.slice(1, 3), 16);
+          const gg = parseInt(zone.slice(3, 5), 16);
+          const bb = parseInt(zone.slice(5, 7), 16);
+          const lum = (0.299 * rr + 0.587 * gg + 0.114 * bb) / 255;
+          ctx.fillStyle = lum < 0.55 ? '#ffffff' : '#212529';
           ctx.fillText(`${b.grade.toFixed(1)}%`, midX, midY);
         }
         ctx.restore();
@@ -529,7 +626,7 @@ function renderSegmentElevation(segment, startDistanceM) {
   });
 }
 
-function renderStats(members, count) {
+async function renderStats(members, count) {
   const container = document.getElementById('climb-stats');
   if (members.length === 0) {
     container.innerHTML = '';
@@ -539,23 +636,86 @@ function renderStats(members, count) {
   const bestTime = members.filter(m => m.elapsed_time_s).sort((a, b) => a.elapsed_time_s - b.elapsed_time_s)[0];
   const bestVam = members.filter(m => m.vam).sort((a, b) => b.vam - a.vam)[0];
 
+  // Start/end altitude: interpolated on the latest occurrence's records
+  // (climbs.json stores distances, not altitudes).
+  let altFromTo = null;
+  const seg = currentSegment;
+  if (seg && seg.length && latest) {
+    const altAt = (distM) => {
+      const sorted = seg.filter(r => r.altitude != null);
+      if (!sorted.length) return null;
+      let lo = null, hi = null;
+      for (const r of sorted) {
+        if (r.distance <= distM) lo = r;
+        if (r.distance >= distM && hi == null) hi = r;
+      }
+      if (lo && hi && lo !== hi) {
+        const t = (distM - lo.distance) / Math.max(1e-6, hi.distance - lo.distance);
+        return Math.round(lo.altitude + (hi.altitude - lo.altitude) * t);
+      }
+      return lo ? Math.round(lo.altitude) : (hi ? Math.round(hi.altitude) : null);
+    };
+    const a1 = altAt(latest.start_distance_m);
+    const a2 = altAt(latest.end_distance_m);
+    if (a1 != null && a2 != null) altFromTo = `${fmtElevation(a1)} → ${fmtElevation(a2)}`;
+  }
+
+  // Difficulty score, from the same altitudes.
+  const fiets = (function () {
+    if (!altFromTo) return null;
+    const seg2 = currentSegment;
+    if (!seg2.length) return null;
+    const topAlt = (function () {
+      let top = null;
+      for (const r of seg2) if (r.altitude != null && (top == null || r.altitude > top)) top = r.altitude;
+      return top;
+    })();
+    return fietsScore(latest.elevation_gain_m, latest.length_m, topAlt);
+  })();
+
   const stats = [
     { label: 'Times done', value: count || members.length },
     { label: 'Length', value: fmtDistance(latest.length_m / 1000) },
     { label: 'Ascent', value: fmtElevation(latest.elevation_gain_m) },
+    { label: 'Altitude', value: altFromTo || '-' },
     { label: 'Avg grade', value: fmtGrade(latest.avg_grade_percent) },
+    { label: 'Difficulty', value: fiets != null ? fiets.toFixed(1) : '-' },
     { label: 'Best time', value: bestTime ? fmtDuration(bestTime.elapsed_time_s) : '-' },
+    { label: 'Predicted time', value: '…', id: 'stat-predicted' },
     { label: 'Best VAM', value: bestVam ? Math.round(bestVam.vam) + ' m/h' : '-' },
   ];
 
   container.innerHTML = stats.map(s => `
     <div class="col-6 col-md-3">
       <div class="card text-center p-2">
-        <div class="stat-value">${s.value}</div>
+        <div class="stat-value" ${s.id ? `id="${s.id}"` : ''}>${s.value}</div>
         <div class="stat-label">${s.label}</div>
       </div>
     </div>
   `).join('');
+
+  // Fill the time prediction once the personal model is fitted.
+  try {
+    const model = await getTimeModel();
+    const el = document.getElementById('stat-predicted');
+    if (el && model) {
+      const t = model.predict(latest.elevation_gain_m, latest.length_m);
+      if (t && isFinite(t)) {
+        let txt = fmtDuration(t);
+        // Compare with the PR when there is one.
+        if (bestTime) {
+          const d = (t - bestTime.elapsed_time_s) / bestTime.elapsed_time_s * 100;
+          txt += ` <span class="small ${d >= 0 ? 'text-success' : 'text-danger'}" title="Prediction vs your best time">(${d >= 0 ? '+' : ''}${d.toFixed(0)}% vs PR)</span>`;
+        }
+        el.innerHTML = txt;
+        el.title = `Fit on ${model.n} of your climbs: T = a · H^b · D^c`;
+      } else {
+        el.textContent = '-';
+      }
+    } else if (el) {
+      el.textContent = '-';
+    }
+  } catch (err) { /* prediction is optional */ }
 }
 
 function renderPerformances(members) {

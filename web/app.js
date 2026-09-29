@@ -96,7 +96,9 @@ function route() {
     return;
   }
 
-  const fo = hash.match(/^flyover\/(.+)$/);
+  // Strip a ?query embedded in the hash (e.g. #flyover/<id>?export_seconds=2)
+  // so it isn't mistaken for part of the id.
+  const fo = hash.match(/^flyover\/([^\?]+)(\?.*)?$/);
   if (fo) {
     renderNav(true);
     hideSidebar();

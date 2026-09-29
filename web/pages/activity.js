@@ -1,6 +1,7 @@
 import { fetchActivityDetails, fetchActivityRecords, fetchClimbNames, saveClimbName, identifySegments, saveSegment, validateClimb, deleteActivity, fetchClimbMatches, fetchJournal, saveJournalNote, uploadJournalPhoto, deleteJournalPhoto } from '../utils/api.js';
 import { openSegmentEditor } from '../components/segmentEditor.js?v=2';
 import { openSegmentAnalysis } from '../components/segmentAnalysis.js';
+import { attachFullscreen } from '../utils/fullscreen.js';
 import { fmtDate, fmtTime, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr, climbKey } from '../utils/format.js';
 
 let elevationChart = null;
@@ -116,6 +117,11 @@ export async function renderActivity(activityId) {
   renderMap(records, details.climbs || []);
   renderElevationChart(records, details.climbs || []);
   renderGraphsChartDeferred(records, details.sensors || {});
+  attachFullscreen(document.getElementById('section-map')?.closest('.card'), document.getElementById('map'), {
+    onResize: () => { if (map) { map.invalidateSize(); } }
+  });
+  attachFullscreen(document.getElementById('section-elevation')?.closest('.card'), document.getElementById('section-elevation')?.querySelector('.card-body'));
+  attachFullscreen(document.getElementById('section-graphs')?.closest('.card'), document.getElementById('section-graphs')?.querySelector('.card-body'));
   setupClimbNameLoading(activityId);
   setupIdentifySegments(activityId);
 }

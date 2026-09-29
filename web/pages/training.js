@@ -1,4 +1,5 @@
 import { fetchStats } from '../utils/api.js';
+import { attachFullscreen } from '../utils/fullscreen.js';
 import { fmtDate, fmtDistance, fmtElevation, fmtDuration } from '../utils/format.js';
 
 let statsData = null;
@@ -33,7 +34,7 @@ export async function renderTraining() {
           <div class="card-header fw-semibold">Riding calendar</div>
           <div class="card-body">
             <div id="calendar-heatmap" class="overflow-x-auto"></div>
-            <p class="small text-muted mb-0 mt-2">Darker = more distance that day. Hover a day for details.</p>
+            <p class="small text-muted mb-0 mt-2">Hover a day for details.</p>
           </div>
         </div>
       </div>
@@ -53,7 +54,7 @@ export async function renderTraining() {
               <div class="col-6">
                 <label class="form-label small text-muted">Y axis</label>
                 <select id="weather-y" class="form-select form-select-sm">
-                  <option value="eff" selected>Speed × HR (efficiency)</option>
+                  <option value="eff" selected>Speed / HR (efficiency)</option>
                   <option value="speed">Speed</option>
                   <option value="hr">Heart rate</option>
                 </select>
@@ -92,6 +93,10 @@ export async function renderTraining() {
   renderYoY();
   renderWeather();
   renderGoals();
+  attachFullscreen(document.getElementById('fitness-chart')?.closest('.card'), document.getElementById('fitness-chart').closest('.card-body'));
+  attachFullscreen(document.getElementById('calendar-heatmap')?.closest('.card'), document.getElementById('calendar-heatmap'));
+  attachFullscreen(document.getElementById('yoy-chart')?.closest('.card'), document.getElementById('yoy-chart').closest('.card-body'));
+  attachFullscreen(document.getElementById('weather-chart')?.closest('.card'), document.getElementById('weather-chart').closest('.card-body'));
 }
 
 function renderCalendar() {
@@ -120,7 +125,12 @@ function renderCalendar() {
   const ridden = days.map(d => byDay[d]).sort((a, b) => a - b);
   const q = p => ridden[Math.min(ridden.length - 1, Math.floor(p * (ridden.length - 1)))];
   const thresholds = [q(0.25), q(0.5), q(0.75), q(1)].map(v => v || 0);
-  const colors = ['var(--bs-tertiary-bg)', '#c6e6c4', '#74c476', '#238b45', '#00441b'];
+  const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+  // Light mode: green scale (GitHub-like). Dark mode: GitHub dark greens —
+  // in both themes brighter/saturated = more km.
+  const colors = isDark
+    ? ['var(--bs-tertiary-bg)', '#0e4429', '#006d32', '#26a641', '#39d353']
+    : ['var(--bs-tertiary-bg)', '#c6e6c4', '#74c476', '#238b45', '#00441b'];
 
   // Layout: one row per year, 53 week columns, 7 day cells (compact grid).
   const years = [];
@@ -137,7 +147,6 @@ function renderCalendar() {
   }
 
   const cellSize = 13, gap = 2;
-  const dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
 
   // Layout: one row per year, one <td> per day, weeks left to right.
   el.innerHTML = years.map(yr => {
@@ -159,6 +168,13 @@ function renderCalendar() {
         <table class="cal-table m-0"><tbody>${rows}</tbody></table>
       </div>`;
   }).join('') + `
+    <div class="d-flex justify-content-end align-items-center mt-1">
+      <span class="small text-muted me-1">Less</span>
+      ${[1, 2, 3, 4].map(l =>
+        `<span style="width:11px;height:11px;display:inline-block;margin:0 1px;border-radius:2px;background:${colors[l]};border:1px solid var(--bs-border-color);vertical-align:middle;"></span>`
+      ).join('')}
+      <span class="small text-muted ms-1">More</span>
+    </div>
     <style>
       .cal-table { border-collapse: separate; border-spacing: ${gap}px; table-layout: fixed; }
       .cal-table td { padding: 0; }
@@ -373,7 +389,7 @@ function renderWeather() {
     const showReg = regCheck ? regCheck.checked : false;
 
     const yDefs = {
-      eff:   { value: a => a.avg_speed / a.avg_hr, needs: ['avg_speed', 'avg_hr'], title: 'Speed × HR (km/h per bpm)', fmt: v => v.toFixed(3) },
+      eff:   { value: a => a.avg_speed / a.avg_hr, needs: ['avg_speed', 'avg_hr'], title: 'Speed / HR (km/h per bpm)', fmt: v => v.toFixed(3) },
       speed: { value: a => a.avg_speed, needs: ['avg_speed'], title: 'Average speed (km/h)', fmt: v => v.toFixed(1) },
       hr:    { value: a => a.avg_hr, needs: ['avg_hr'], title: 'Average heart rate (bpm)', fmt: v => String(Math.round(v)) },
     };
