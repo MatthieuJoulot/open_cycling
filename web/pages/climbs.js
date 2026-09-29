@@ -146,6 +146,7 @@ export async function renderClimbs() {
   allGroups = groups || {};
   allClimbs = flattenClimbs(climbsData.activities || []);
   renderList();
+  loadRegionsOnce().catch(err => console.error('Failed to load regions', err));
 
   const listBody = document.getElementById('climbs-list-body');
   listBody.addEventListener('click', onCountryToggle);
@@ -374,15 +375,25 @@ async function onGroupChange() {
 }
 
 async function loadRegionsOnce() {
-  // /api/regions now returns instantly from the cache; if some climbs
-  // have no region yet the server geocodes in the background and we
-  // re-fetch when it finishes.
-  const data = await fetchRegions();
-  allRegions = data || {};
-  allClimbs = allClimbs.map(c => ({ ...c, region: allRegions[c.key] || 'Unknown' }));
-  renderList();
-  if (data && data.warming) {
-    await pollRegionsWarm();
+  // Regions load in the background on page entry so the Region column
+  // is filled from the start; /api/regions returns instantly from the
+  // cache. If some climbs have no region yet the server geocodes in
+  // the background and we re-fetch when it finishes.
+  if (regionsLoading) return;
+  regionsLoading = true;
+  const loader = document.getElementById('climbs-region-loading');
+  if (loader && Object.keys(allRegions).length === 0) loader.classList.remove('d-none');
+  try {
+    const data = await fetchRegions();
+    allRegions = data || {};
+    allClimbs = allClimbs.map(c => ({ ...c, region: allRegions[c.key] || 'Unknown' }));
+    renderList();
+    if (data && data.warming) {
+      await pollRegionsWarm();
+    }
+  } finally {
+    regionsLoading = false;
+    if (loader) loader.classList.add('d-none');
   }
 }
 
