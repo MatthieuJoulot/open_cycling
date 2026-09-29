@@ -792,7 +792,16 @@ function renderPerfChart(members) {
     if (regression) {
       const a = -regression.slope;
       const aText = Math.abs(a) < 0.001 || Math.abs(a) > 10000 ? a.toExponential(3) : a.toFixed(4);
-      info.textContent = `R² = ${regression.r2.toFixed(3)} | y = -${aText}·x + ${regression.intercept.toFixed(4)}`;
+      if (metric === 'elapsed_time_s') {
+        // Express the time trend in minutes per attempt, easier to read
+        // than seconds per attempt.
+        const aMin = a / 60;
+        const bMin = regression.intercept / 60;
+        const aMinText = Math.abs(aMin) < 0.001 || Math.abs(aMin) > 10000 ? aMin.toExponential(3) : aMin.toFixed(3);
+        info.textContent = `R² = ${regression.r2.toFixed(3)} | time = ${aMinText >= 0 ? '-' : '+'}${Math.abs(aMinText)} min/attempt, ${(bMin / 60 >= 1 ? (bMin / 60).toFixed(1) + ' h' : bMin.toFixed(1) + ' min')} at attempt 0`;
+      } else {
+        info.textContent = `R² = ${regression.r2.toFixed(3)} | y = -${aText}·x + ${regression.intercept.toFixed(4)}`;
+      }
     } else {
       info.textContent = '';
     }
@@ -828,6 +837,12 @@ function renderPerfChart(members) {
     xScale.offset = true;
   }
 
+  const yScale = { title: { display: true, text: meta.axis } };
+  if (metric === 'elapsed_time_s') {
+    yScale.ticks = { callback: v => fmtDuration(v) };   // h:mm:ss instead of raw seconds
+    yScale.type = 'linear';
+  }
+
   if (window.climbPerfChart) window.climbPerfChart.destroy();
   const ctx = canvas.getContext('2d');
   window.climbPerfChart = new window.Chart(ctx, {
@@ -850,7 +865,7 @@ function renderPerfChart(members) {
       },
       scales: {
         x: xScale,
-        y: { title: { display: true, text: meta.axis } }
+        y: yScale
       }
     }
   });
