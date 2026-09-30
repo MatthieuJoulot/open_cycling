@@ -15,3 +15,5 @@ venv/
 config.json
 garmindb.log
 garmindb.db
+# Added by code-review-graph
+.code-review-graph/
