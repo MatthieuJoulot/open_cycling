@@ -279,9 +279,12 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
     const ctx = canvas.getContext('2d');
 
     const datasets = [];
-    // Elevation area behind everything, on its own axis.
+    // Elevation area behind everything, on its own axis. Points must be
+    // shifted to the segment-relative x range (0..totalM km), not the
+    // activity's absolute distances.
     if (segment.length) {
-      datasets.push(elevationDataset(segment, [[startM, endM]]));
+      const rel = segment.map(r => ({ ...r, distance: r.distance - startM }));
+      datasets.push(elevationDataset(rel, [[0, totalM]]));
     }
     const metricSets = [
       {
