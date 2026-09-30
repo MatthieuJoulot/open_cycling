@@ -216,12 +216,114 @@ def get_stats(connect_db):
     # window over each ride's distance/timestamp records). Cached.
     efforts = _best_efforts(cur, activities, EFFORT_DISTANCES_M)
 
+    # Normalized HR: fit avg_hr against climb intensity, temperature and
+    # altitude, then subtract each effect so rides are comparable as if
+    # all done flat, at 20°C, sea level.
+    norm = _normalized_hr(activities)
+
     conn.close()
     return {
         "activities": activities,
         "climb_occurrences": occurrences,
         "best_efforts": efforts,
+        "hr_normalization": norm,
     }
+
+
+def _normalized_hr(activities):
+    """OLS fit of avg HR on climb intensity, temperature, altitude.
+
+    Predictors are included only when enough rides carry them
+    (temperature is often absent). Coefficients are for predictors
+    centred on their in-sample means, so the intercept equals the
+    mean HR of the fitted rides and each coefficient is the local
+    effect per unit. The frontend subtracts each ride's deviations
+    from the means, normalizing every ride to the typical
+    conditions (flat-ish, median temp, median altitude).
+    Returns {"intercept", "coef", "means", "n", "r2", "std_err",
+    "predictors"} or {"n": 0} when not enough data.
+    """
+    rows = []
+    for a in activities:
+        hr = a.get("avg_hr")
+        dist = a.get("distance")
+        ascent = a.get("ascent")
+        if not hr or not dist or ascent is None:
+            continue
+        ci = ascent / dist                     # vertical m per horizontal km
+        temp = a.get("avg_temperature")
+        alt = a.get("avg_altitude")
+        rows.append({
+            "hr": float(hr),
+            "climb_intensity": ci,
+            "temp_dev": (float(temp) - 20.0) if temp is not None else None,
+            "altitude_km": (float(alt) / 1000.0) if alt is not None else None,
+        })
+
+    # Keep a predictor only when at least MIN_PRED rows have it.
+    MIN_PRED = 50
+    predictors = []
+    for key in ("climb_intensity", "temp_dev", "altitude_km"):
+        if sum(1 for r in rows if r[key] is not None) >= MIN_PRED:
+            predictors.append(key)
+    if not predictors:
+        return {"n": len(rows)}
+
+    fit_rows = [r for r in rows if all(r[p] is not None for p in predictors)]
+    n = len(fit_rows)
+    if n < 20:
+        return {"n": n}
+
+    means = {"hr": sum(r["hr"] for r in fit_rows) / n}
+    for p in predictors:
+        means[p] = sum(r[p] for r in fit_rows) / n
+
+    k = 1 + len(predictors)
+    X = [[1.0] + [r[p] - means[p] for p in predictors] for r in fit_rows]
+    y = [r["hr"] - means["hr"] for r in fit_rows]
+
+    xtx = [[sum(X[t][i] * X[t][j] for t in range(n)) for j in range(k)] for i in range(k)]
+    xty = [sum(X[t][i] * y[t] for t in range(n)) for i in range(k)]
+    b = _solve(xtx, xty)
+    if b is None:
+        return {"n": n}
+
+    ss_res = sum((y[t] - sum(b[i] * X[t][i] for i in range(k))) ** 2 for t in range(n))
+    ss_tot = sum(v * v for v in y) or 1e-12
+    r2 = 1 - ss_res / ss_tot
+    dof = max(1, n - k)
+    std_err = (ss_res / dof) ** 0.5
+
+    coef = {p: b[i + 1] for i, p in enumerate(predictors)}
+    return {
+        "intercept": round(means["hr"], 1),
+        "coef": {p: round(v, 2) for p, v in coef.items()},
+        "means": {"hr": round(means["hr"], 1),
+                  **{p: round(means[p], 3 if p == "altitude_km" else 1) for p in predictors}},
+        "n": n,
+        "r2": round(r2, 3),
+        "std_err": round(std_err, 1),
+        "predictors": predictors,
+    }
+
+
+def _solve(A, y):
+    """Gaussian elimination with partial pivoting; None if singular."""
+    n = len(A)
+    M = [row[:] + [y[i]] for i, row in enumerate(A)]
+    for col in range(n):
+        piv = max(range(col, n), key=lambda r: abs(M[r][col]))
+        if abs(M[piv][col]) < 1e-12:
+            return None
+        M[col], M[piv] = M[piv], M[col]
+        pv = M[col][col]
+        for r in range(n):
+            if r == col:
+                continue
+            f = M[r][col] / pv
+            for c in range(col, n + 1):
+                M[r][c] -= f * M[col][c]
+    return [M[i][n] / M[i][i] for i in range(n)]
 
 
 def _best_efforts(cur, activities, distances_m):

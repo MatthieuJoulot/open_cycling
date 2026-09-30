@@ -120,7 +120,7 @@ function renderAll() {
 // is floated, Chart.js responsive handles the resize.
 function attachFullscreenToStats() {
   const ids = ['stats-profile-chart', 'stats-monthly-chart', 'stats-count-chart',
-    'stats-load-chart', 'stats-categories-chart'];
+    'stats-load-chart', 'stats-categories-chart', 'stats-norm-chart'];
   for (const id of ids) {
     const canvas = document.getElementById(id);
     if (!canvas || !canvas.parentElement) continue;
@@ -692,10 +692,18 @@ function renderCharts() {
         </div>
       </div>
     </div>
+    <div class="card mb-3" id="stats-norm-card">
+      <div class="card-header fw-semibold" id="stats-norm-header">Normalized HR — fitness trend</div>
+      <div class="card-body p-2">
+        <div style="height: 280px; position: relative;"><canvas id="stats-norm-chart"></canvas></div>
+        <div class="small text-muted mt-1" id="stats-norm-note"></div>
+      </div>
+    </div>
     <div id="stats-extras"></div>
   `;
 
   renderExtras(acts, range);
+  renderNormHr(acts);
 
   // Monthly distance + elevation bars
   if (monthlyChart) monthlyChart.destroy();
@@ -805,6 +813,126 @@ function renderCharts() {
         yHr: { position: 'left', title: { display: true, text: 'HR (bpm)' }, beginAtZero: false },
         ySpeed: { position: 'right', title: { display: true, text: 'Speed (km/h)' }, grid: { drawOnChartArea: false } },
         yCad: { display: false, position: 'right', beginAtZero: false },
+      }
+    }
+  });
+}
+
+// Normalized HR: subtract the fitted effect of climb intensity,
+// temperature and altitude so rides are comparable as if all done
+// under the same conditions. Scatter per ride + 90-day moving average.
+let normChart = null;
+
+function normHrOf(a, norm) {
+  if (!a.avg_hr) return null;
+  let correction = 0;
+  for (const p of norm.predictors) {
+    let v;
+    if (p === 'climb_intensity') {
+      if (!a.distance || a.ascent == null) return null;
+      v = a.ascent / a.distance;
+    } else if (p === 'temp_dev') {
+      if (a.avg_temperature == null) return null;
+      v = a.avg_temperature - 20;
+    } else if (p === 'altitude_km') {
+      if (a.avg_altitude == null) return null;
+      v = a.avg_altitude / 1000;
+    } else {
+      return null;
+    }
+    correction += norm.coef[p] * (v - norm.means[p]);
+  }
+  return a.avg_hr - correction;
+}
+
+function renderNormHr(acts) {
+  const norm = statsData.hr_normalization;
+  const card = document.getElementById('stats-norm-card');
+  if (!norm || !norm.n || !norm.predictors || !norm.predictors.length) {
+    card.classList.add('d-none');
+    return;
+  }
+
+  const rides = acts
+    .map(a => ({ a, v: normHrOf(a, norm) }))
+    .filter(r => r.v != null)
+    .sort((x, y) => (x.a.start_time || '').localeCompare(y.a.start_time || ''));
+  if (rides.length < 10) {
+    card.classList.add('d-none');
+    return;
+  }
+
+  const times = rides.map(r => new Date(r.a.start_time).getTime());
+  const normVals = rides.map(r => r.v);
+
+  // 90-day moving average over the time-sorted values.
+  const DAY = 86400000;
+  const movAvg = normVals.map((_, i) => {
+    let sum = 0, cnt = 0;
+    for (let j = i; j >= 0 && times[i] - times[j] <= 90 * DAY; j--) {
+      sum += normVals[j];
+      cnt++;
+    }
+    return sum / cnt;
+  });
+
+  const predLabels = { climb_intensity: 'climb intensity (m/km)', temp_dev: 'temperature (°C from 20)', altitude_km: 'altitude (km)' };
+  const coefs = norm.predictors.map(p => `${predLabels[p]}: ${norm.coef[p] > 0 ? '+' : ''}${norm.coef[p]}`).join(' · ');
+  document.getElementById('stats-norm-note').textContent =
+    `Fitted on ${norm.n} rides (R²=${norm.r2}, ±${norm.std_err} bpm). Effects removed: ${coefs}. Each ride is shown as if ridden at your typical conditions; the line is a 90-day moving average.`;
+
+  if (normChart) normChart.destroy();
+  normChart = new window.Chart(document.getElementById('stats-norm-chart').getContext('2d'), {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: 'Normalized HR',
+          data: rides.map((r, i) => ({ x: times[i], y: r.v })),
+          borderColor: 'transparent',
+          pointRadius: 2,
+          pointBackgroundColor: 'rgba(220, 53, 69, 0.45)',
+          pointBorderWidth: 0,
+          order: 2,
+        },
+        {
+          label: '90-day average',
+          data: movAvg.map((v, i) => ({ x: times[i], y: v })),
+          borderColor: '#198754',
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.25,
+          fill: false,
+          order: 1,
+        },
+        {
+          label: 'Raw avg HR',
+          data: rides.map(r => ({ x: new Date(r.a.start_time).getTime(), y: r.a.avg_hr })),
+          borderColor: 'rgba(108, 117, 125, 0.5)',
+          borderWidth: 1,
+          pointRadius: 0,
+          tension: 0.25,
+          order: 3,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      parsing: false,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: { display: true, labels: { boxWidth: 12, usePointStyle: true } },
+        tooltip: {
+          callbacks: {
+            title: items => rides[items[0].dataIndex] ? rides[items[0].dataIndex].a.start_time.slice(0, 10) : '',
+            label: i => `${i.dataset.label}: ${i.parsed.y.toFixed(1)} bpm`,
+          }
+        }
+      },
+      scales: {
+        x: { type: 'linear', title: { display: true, text: 'Date' }, ticks: { maxTicksLimit: 10, callback: v => new Date(v).toISOString().slice(0, 7) } },
+        y: { title: { display: true, text: 'HR (bpm)' }, beginAtZero: false },
       }
     }
   });

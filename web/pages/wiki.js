@@ -126,6 +126,19 @@ export async function renderWiki() {
       </div>
 
       <div class="card mb-3">
+        <div class="card-header fw-semibold">Normalized HR (fitness trend)</div>
+        <div class="card-body">
+          <p>Raw average heart rate per ride is hard to compare: a ride up a big climb, in heat or at altitude naturally runs higher than a flat commute, so a simple HR-over-time chart mostly reflects <em>where and when</em> you rode, not how your fitness evolved. The <strong>Normalized HR</strong> chart on the statistics page fixes this the way Strava does for graded runs:</p>
+          <ul>
+            <li>The app fits a linear model over your rides: <code>HR = intercept + b₁·climb intensity + b₂·temperature + b₃·altitude</code>, where climb intensity is vertical metres per km and temperature its deviation from 20°C. A predictor is included only when enough rides carry it.</li>
+            <li>Each ride's heart rate is then <strong>corrected</strong>: the fitted effects are subtracted, so every ride is shown as if done under your <em>typical</em> conditions (your median climb load, temperature and altitude).</li>
+            <li>The chart plots one dot per ride, a <strong>90-day moving average</strong> as the trend line, and your raw average HR (grey) for comparison. When the green line drifts down while the grey line jumps around, fitness improved: the same typical ride now costs fewer beats.</li>
+          </ul>
+          <p class="small text-muted mb-0">The fit quality (R², residual error) and the removed effects are printed under the chart. With many mixed rides the fit is noisy — treat the moving average, not individual dots, as the signal.</p>
+        </div>
+      </div>
+
+      <div class="card mb-3">
         <div class="card-header fw-semibold">Climbing profile (VAM curve)</div>
         <div class="card-body">
           <p>On the statistics page, the <strong>climbing profile</strong> chart shows how hard you can climb depending on how long the effort lasts — the climbing equivalent of a power-duration curve, like the power profile Climbfinder builds for riders.</p>
