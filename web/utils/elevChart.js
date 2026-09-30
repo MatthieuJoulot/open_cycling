@@ -25,6 +25,7 @@ export function elevationDataset(records, climbRanges = [], options = {}) {
   const dark = typeof document !== 'undefined'
     && document.documentElement.getAttribute('data-bs-theme') === 'dark';
   return {
+    type: 'line',
     label: 'Elevation (m)',
     data: pts,
     yAxisID: options.yAxisID ?? 'yElev',

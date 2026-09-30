@@ -232,20 +232,27 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
       .filter(b => b[metric] != null)
       .map(b => ({ x: binCenter(b), y: b[metric], _bin: b }));
 
-    // Other attempts: one grey dot per bin per attempt.
+    // Other attempts: one grey dot per bin per attempt, snapped to the
+    // current segment's bin grid so every dot sits at a bin centre.
+    // Attempts may cover slightly different absolute ranges, so values
+    // are matched to bins by absolute distance, not by attempt-local index.
     const othersData = [];
     const perBin = {};   // for avg/best, populated always (cheap)
+    const binCenterAbs = b => b.startDistKm + (b.endDistKm - b.startDistKm) / 2;
     const collect = (mb, list) => {
       if (mb[metric] == null) return;
       (perBin[mb.idx] = perBin[mb.idx] || []).push(mb[metric]);
-      if (list) list.push({ x: mb.startDistKm + (mb.endDistKm - mb.startDistKm) / 2, y: mb[metric] });
+      if (list) list.push({ x: binCenterAbs(mb), y: mb[metric] });
     };
     bins.forEach(b => collect(b, null));
     const others = attempts || [];
     for (const m of others) {
       const mRecs = await getAttemptRecords(m);
       if (!mRecs.length) continue;
-      const { bins: mBins } = computeBins(mRecs, m.start_distance_m, m.end_distance_m, binSizeM, riderKg);
+      // Bin on the current segment's absolute grid: values outside the
+      // current segment's bins are dropped, partial overlaps land in the
+      // bin they intersect.
+      const { bins: mBins } = computeBins(mRecs, startM, endM, binSizeM, riderKg);
       const pts = [];
       mBins.forEach(mb => collect(mb, pts));
       othersData.push(...pts);
@@ -326,9 +333,14 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
     ].filter(Boolean);
     datasets.push(...metricSets);
 
-    // Metric axis range: cover dots + ref lines without clipping.
+    // Metric axis range: cover ALL dots (current, other attempts, avg,
+    // best) so nothing is clipped out of the visible area.
     const refVals = [...(avgData || []), ...(bestData || [])].map(v => v.y);
-    const dotVals = [...currentData.map(v => v.y), ...refVals].filter(v => v != null);
+    const dotVals = [
+      ...currentData.map(v => v.y),
+      ...othersData.map(v => v.y),
+      ...refVals,
+    ].filter(v => v != null);
     const beginAtZero = metric === 'vam' || metric === 'avg_cadence' || metric === 'avg_power' || metric === 'est_wkg';
     let yCfg = { title: { display: true, text: meta.axis }, beginAtZero };
     if (dotVals.length) {
