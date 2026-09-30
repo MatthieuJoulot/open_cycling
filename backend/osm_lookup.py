@@ -6,7 +6,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 CACHE_DIR = ROOT / "cache"
 OSM_RESPONSES_CACHE = CACHE_DIR / "osm_responses.json"
 CLIMB_NAMES_FILE = ROOT / "climb_names.json"

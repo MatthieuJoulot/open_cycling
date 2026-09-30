@@ -10,7 +10,7 @@ from pathlib import Path
 import config
 
 DB_PATH = config.ACTIVITIES_DB
-OUT_PATH = Path(__file__).with_name("climbs.json")
+OUT_PATH = Path(__file__).parent.parent / "climbs.json"
 
 # Detection parameters
 SMOOTH_WINDOW = 15          # points for altitude moving average

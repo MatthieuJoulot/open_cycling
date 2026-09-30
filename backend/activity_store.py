@@ -10,7 +10,7 @@ from pathlib import Path
 
 import config
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 IGNORED_FILE = ROOT / "ignored_activities.json"
 
 GARMINDB_ACTIVITY_TABLES = (

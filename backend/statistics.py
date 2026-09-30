@@ -14,7 +14,7 @@ import sqlite3
 import segment_store
 import validated_store
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 CLIMBS_JSON = ROOT / "climbs.json"
 PERF_CACHE = ROOT / "cache" / "climb_stats.json"
 EFFORTS_CACHE = ROOT / "cache" / "best_efforts.json"

@@ -3,7 +3,7 @@ import json
 import math
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 CLIMBS_JSON = ROOT / "climbs.json"
 GROUPS_JSON = ROOT / "climb_groups.json"
 

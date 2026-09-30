@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 CONFIG_JSON = ROOT / "config.json"
 
 DEFAULTS = {

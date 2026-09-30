@@ -14,7 +14,7 @@ from pathlib import Path
 
 import osm_lookup
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 DB_CACHE = ROOT / "cache" / "climb_db.json"
 
 # name, country, region, lat, lon (col point), elevation (m)

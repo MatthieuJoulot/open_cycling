@@ -17,7 +17,7 @@ from osm_lookup import (
     flush_osm_cache,
 )
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 CLIMBS_JSON = ROOT / "climbs.json"
 
 

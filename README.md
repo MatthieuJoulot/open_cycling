@@ -77,7 +77,7 @@ This fetches the **1000 most recent** activities (GarminDB's default `download_a
 Start the server and configure from the UI — no file editing needed:
 
 ```bash
-python3 serve.py
+python3 backend/serve.py
 ```
 
 Open `http://127.0.0.1:8080`. With no rides found, the feed shows a **Configure** button that leads to the Parameters page. The only path you normally need is the **HealthData directory** from step 1 (`~/HealthData` by default): the database and FIT file paths are derived from it, and the page shows whether each path exists. Save, then restart the server.
@@ -113,7 +113,7 @@ Paths may start with `~`. Each value can also be overridden with environment var
 ### 3. Run
 
 ```bash
-python3 serve.py
+python3 backend/serve.py
 ```
 
 Open `http://127.0.0.1:8080`.
@@ -137,14 +137,15 @@ With `sync_latest` (default `true` in `config.json`), GarminDB only walks the 25
 
 ## Files
 
-- `serve.py` — API and static file server (includes `/api/sync`, `/api/stats`, `/api/heatmap`).
-- `analyze_climbs.py` — climb detection logic (incremental).
-- `statistics.py` — statistics page backend, best efforts, per-ride temperature/altitude.
-- `osm_lookup.py` — climb naming from curated list and OSM.
-- `climb_groups.py` — grouping of equivalent climbs.
-- `regions.py` — reverse geocoding of activity regions.
-- `segment_store.py` — user-defined segment edits/additions.
-- `config.py` / `config.example.json` — configuration layer.
+- `backend/serve.py` — API and static file server (includes `/api/sync`, `/api/stats`, `/api/heatmap`).
+- `backend/analyze_climbs.py` — climb detection logic (incremental).
+- `backend/statistics.py` — statistics page backend, best efforts, per-ride temperature/altitude.
+- `backend/osm_lookup.py` — climb naming from curated list and OSM.
+- `backend/climb_groups.py` — grouping of equivalent climbs.
+- `backend/regions.py` — reverse geocoding of activity regions.
+- `backend/segment_store.py` — user-defined segment edits/additions.
+- `backend/config.py` / `config.example.json` — configuration layer.
+- `backend/` — Python server and analysis modules.
 - `web/` — frontend JavaScript and HTML (pages: feed, climbs, climb, activity, statistics, training, wiki, parameters).
 - `cols.json` — curated cols/passes/saddles.
 - `climbs.json`, `climb_groups.json`, `climb_names.json`, `climb_segments.json`, `cache/` — generated data (gitignored).

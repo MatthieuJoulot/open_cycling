@@ -5,7 +5,7 @@ from pathlib import Path
 
 import analyze_climbs
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 SEGMENTS_FILE = ROOT / "climb_segments.json"
 
 

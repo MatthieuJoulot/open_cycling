@@ -9,7 +9,7 @@ from osm_lookup import (
     suggest_name_full,
 )
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 CLIMBS_JSON = ROOT / "climbs.json"
 
 SELECTED_ACTIVITY_IDS = [

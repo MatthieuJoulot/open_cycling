@@ -28,10 +28,10 @@ import validated_store
 import journal
 import climb_database
 
-ROOT = Path(__file__).parent / "web"
-CLIMBS_JSON = Path(__file__).parent / "climbs.json"
+ROOT = Path(__file__).parent.parent / "web"
+CLIMBS_JSON = Path(__file__).parent.parent / "climbs.json"
 DB_PATH = config.ACTIVITIES_DB
-APP_ROOT = Path(__file__).parent
+APP_ROOT = Path(__file__).parent.parent
 
 
 def _connect_db():
@@ -1620,7 +1620,7 @@ def import_files(payload):
             return {"error": f"{key}: expected a JSON list"}
         if expected_type is dict and not isinstance(data, dict):
             return {"error": f"{key}: expected a JSON object"}
-        dest = Path(__file__).parent / filename
+        dest = Path(__file__).parent.parent / filename
         dest.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         if isinstance(data, list):
             count = len(data)

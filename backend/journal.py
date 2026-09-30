@@ -13,7 +13,7 @@ from pathlib import Path
 
 import config
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 JOURNAL_JSON = ROOT / "journal.json"
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
