@@ -1,3 +1,5 @@
+import { fetchProfile } from '../utils/api.js';
+
 const BIN_SIZES = [200, 500, 1000];
 
 const METRICS = {
@@ -5,8 +7,25 @@ const METRICS = {
   avg_hr: { label: 'Avg HR', axis: 'HR (bpm)', unit: ' bpm', decimals: 0, field: 'hr', higherIsBetter: false },
   vam: { label: 'VAM', axis: 'VAM (m/h)', unit: ' m/h', decimals: 0, field: null, higherIsBetter: true },
   avg_power: { label: 'Avg power', axis: 'Power (W)', unit: ' W', decimals: 0, field: 'power', higherIsBetter: true },
+  est_wkg: { label: 'Est. power/kg', axis: 'Est. power (W/kg)', unit: ' W/kg', decimals: 2, field: null, higherIsBetter: true },
   avg_cadence: { label: 'Avg cadence', axis: 'Cadence (rpm)', unit: ' rpm', decimals: 0, field: 'cadence', higherIsBetter: true },
 };
+
+// Physics constants for the power estimation (same model as the backend
+// and the wiki: gravity + rolling + air, ~2.5% drivetrain loss, ~10 kg bike).
+const EST = { CRR: 0.005, CDA: 0.32, DRIVETRAIN: 0.975, G: 9.81, BIKE_KG: 10 };
+
+let riderWeightCache;
+async function loadRiderWeightKg() {
+  if (riderWeightCache !== undefined) return riderWeightCache;
+  try {
+    const p = await fetchProfile();
+    riderWeightCache = p?.athlete?.weight_kg || null;
+  } catch (err) {
+    riderWeightCache = null;
+  }
+  return riderWeightCache;
+}
 
 function defaultBinSize(totalM) {
   if (totalM < 1000) return 200;
@@ -49,7 +68,7 @@ function interpolateAltitude(segment, distM) {
   return null;
 }
 
-function computeBins(records, startM, endM, binSizeM) {
+function computeBins(records, startM, endM, binSizeM, riderKg) {
   const segment = records.filter(r => r.distance != null && r.distance >= startM && r.distance <= endM);
   if (segment.length < 2) return { bins: [], segment };
 
@@ -80,6 +99,25 @@ function computeBins(records, startM, endM, binSizeM) {
         if (duration > 0 && gain != null) vam = (gain / duration) * 3600;
       }
 
+      // Estimated W/kg for the bin: physics model with the bin's average
+      // speed (m/s), grade and mid-bin altitude. Same constants as backend.
+      let estWkg = null;
+      if (riderKg && grade != null && grade > 1.5 && duration > 0 && length > 0) {
+        const v = (length / duration);                       // m/s
+        const gradeFrac = grade / 100;
+        if (v > 0.5) {
+          const mass = riderKg + EST.BIKE_KG;
+          const midAlt = ((startAlt != null ? startAlt : 0) + (endAlt != null ? endAlt : 0)) / 2;
+          const rho = 1.225 * Math.exp(-midAlt / 8500);
+          const theta = Math.atan(gradeFrac);
+          const fGrav = mass * EST.G * Math.sin(theta);
+          const fRoll = mass * EST.G * EST.CRR * Math.cos(theta);
+          const fAir = 0.5 * rho * EST.CDA * v * v;
+          const w = (fGrav + fRoll + fAir) * v / EST.DRIVETRAIN;
+          if (w > 0 && w < 2000) estWkg = w / riderKg;
+        }
+      }
+
       bins.push({
         idx: k,
         startDistKm: (bucketStart - startM) / 1000,
@@ -93,6 +131,7 @@ function computeBins(records, startM, endM, binSizeM) {
         avg_hr: avgOf('hr'),
         avg_power: avgOf('power'),
         avg_cadence: avgOf('cadence'),
+        est_wkg: estWkg,
       });
     }
     k++;
@@ -109,6 +148,7 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
   const totalM = endM - startM;
   const hasPower = records.some(r => r.power != null);
   const hasCadence = records.some(r => r.cadence != null);
+  const riderKg = await loadRiderWeightKg();
   let binSizeM = defaultBinSize(totalM);
   let metric = 'avg_speed';
   let showAvg = false;
@@ -170,6 +210,7 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
                 <option value="avg_hr">Avg HR</option>
                 <option value="vam">VAM</option>
                 <option value="avg_power" ${hasPower ? '' : 'disabled'}>Avg power${hasPower ? '' : ' (no data)'}</option>
+                <option value="est_wkg" ${riderKg ? '' : 'disabled'}>Est. power/kg${riderKg ? '' : ' (no weight)'}</option>
                 <option value="avg_cadence" ${hasCadence ? '' : 'disabled'}>Avg cadence${hasCadence ? '' : ' (no data)'}</option>
               </select>
             </div>
@@ -205,7 +246,7 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
 
   const render = async () => {
     const meta = METRICS[metric];
-    const { bins } = computeBins(records, startM, endM, binSizeM);
+    const { bins } = computeBins(records, startM, endM, binSizeM, riderKg);
     const canvas = modalEl.querySelector('#segment-analysis-chart');
     const noData = modalEl.querySelector('#segment-analysis-no-data');
     if (!bins.length) {
@@ -242,7 +283,7 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
       for (const m of others) {
         const mRecs = await getAttemptRecords(m);
         if (!mRecs.length) continue;
-        const { bins: mBins } = computeBins(mRecs, m.start_distance_m, m.end_distance_m, binSizeM);
+        const { bins: mBins } = computeBins(mRecs, m.start_distance_m, m.end_distance_m, binSizeM, riderKg);
         mBins.forEach(collect);
       }
       // Values indexed by bin position in the current segment's bins array.
@@ -304,6 +345,7 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
                   fmt('Avg HR', b.avg_hr, ' bpm'),
                   fmt('VAM', b.vam, ' m/h'),
                   hasPower ? fmt('Avg power', b.avg_power, ' W') : null,
+                  b.est_wkg != null ? fmt('Est. W/kg', b.est_wkg, ' W/kg', 2) : null,
                   hasCadence ? fmt('Avg cadence', b.avg_cadence, ' rpm') : null,
                 ].filter(Boolean);
               }
@@ -323,7 +365,7 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
           y: (() => {
             const cfg = {
               title: { display: true, text: meta.axis },
-              beginAtZero: metric === 'vam' || metric === 'avg_cadence' || metric === 'avg_power',
+              beginAtZero: metric === 'vam' || metric === 'avg_cadence' || metric === 'avg_power' || metric === 'est_wkg',
             };
             // Widen the range so the avg/best lines are never clipped out
             // of the visible area.
