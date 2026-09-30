@@ -832,10 +832,10 @@ function normHrOf(a, norm) {
       if (!a.distance || a.ascent == null) return null;
       v = a.ascent / a.distance;
     } else if (p === 'temp_dev') {
-      if (a.avg_temperature == null) return null;
+      if (a.avg_temperature == null) continue;   // no correction possible
       v = a.avg_temperature - 20;
     } else if (p === 'altitude_km') {
-      if (a.avg_altitude == null) return null;
+      if (a.avg_altitude == null) continue;       // no correction possible
       v = a.avg_altitude / 1000;
     } else {
       return null;
