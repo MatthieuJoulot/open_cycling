@@ -1,4 +1,4 @@
-import { fetchProfile } from '../utils/api.js';
+import { loadRiderWeightKg as sharedLoadRiderWeightKg, estimateWkg } from '../utils/estPower.js';
 
 const BIN_SIZES = [200, 500, 1000];
 
@@ -11,21 +11,7 @@ const METRICS = {
   avg_cadence: { label: 'Avg cadence', axis: 'Cadence (rpm)', unit: ' rpm', decimals: 0, field: 'cadence', higherIsBetter: true },
 };
 
-// Physics constants for the power estimation (same model as the backend
-// and the wiki: gravity + rolling + air, ~2.5% drivetrain loss, ~10 kg bike).
-const EST = { CRR: 0.005, CDA: 0.32, DRIVETRAIN: 0.975, G: 9.81, BIKE_KG: 10 };
-
-let riderWeightCache;
-async function loadRiderWeightKg() {
-  if (riderWeightCache !== undefined) return riderWeightCache;
-  try {
-    const p = await fetchProfile();
-    riderWeightCache = p?.athlete?.weight_kg || null;
-  } catch (err) {
-    riderWeightCache = null;
-  }
-  return riderWeightCache;
-}
+const loadRiderWeightKg = sharedLoadRiderWeightKg;
 
 function defaultBinSize(totalM) {
   if (totalM < 1000) return 200;
@@ -100,22 +86,13 @@ function computeBins(records, startM, endM, binSizeM, riderKg) {
       }
 
       // Estimated W/kg for the bin: physics model with the bin's average
-      // speed (m/s), grade and mid-bin altitude. Same constants as backend.
+      // speed (m/s), grade and mid-bin altitude. Shared util, same
+      // constants as the backend.
       let estWkg = null;
-      if (riderKg && grade != null && grade > 1.5 && duration > 0 && length > 0) {
-        const v = (length / duration);                       // m/s
-        const gradeFrac = grade / 100;
-        if (v > 0.5) {
-          const mass = riderKg + EST.BIKE_KG;
-          const midAlt = ((startAlt != null ? startAlt : 0) + (endAlt != null ? endAlt : 0)) / 2;
-          const rho = 1.225 * Math.exp(-midAlt / 8500);
-          const theta = Math.atan(gradeFrac);
-          const fGrav = mass * EST.G * Math.sin(theta);
-          const fRoll = mass * EST.G * EST.CRR * Math.cos(theta);
-          const fAir = 0.5 * rho * EST.CDA * v * v;
-          const w = (fGrav + fRoll + fAir) * v / EST.DRIVETRAIN;
-          if (w > 0 && w < 2000) estWkg = w / riderKg;
-        }
+      if (grade != null && duration > 0 && length > 0) {
+        estWkg = estimateWkg(grade, length / duration,
+          (startAlt != null ? startAlt : 0) / 2 + (endAlt != null ? endAlt : 0) / 2,
+          riderKg);
       }
 
       bins.push({

@@ -2,6 +2,7 @@ import { fetchActivityDetails, fetchActivityRecords, fetchClimbNames, saveClimbN
 import { openSegmentEditor } from '../components/segmentEditor.js?v=2';
 import { openSegmentAnalysis } from '../components/segmentAnalysis.js';
 import { attachFullscreen } from '../utils/fullscreen.js';
+import { loadRiderWeightKg, estimateClimbWkg } from '../utils/estPower.js';
 import { fmtDate, fmtTime, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr, climbKey } from '../utils/format.js';
 
 let elevationChart = null;
@@ -62,7 +63,7 @@ export async function renderActivity(activityId) {
             <div id="climbs-loading" class="small text-muted mb-2 d-none">Looking up names from OpenStreetMap…</div>
             <div class="table-responsive">
               <table class="table table-sm table-striped">
-                <thead><tr><th>#</th><th>Name</th><th>Category</th><th>Start (km)</th><th>Length (km)</th><th>Elev. gain</th><th>Avg grade</th><th>Steepest 100m</th><th>VAM</th><th>Δ PR</th></tr></thead>
+                <thead><tr><th>#</th><th>Name</th><th>Category</th><th>Start (km)</th><th>Length (km)</th><th>Elev. gain</th><th>Avg grade</th><th>Steepest 100m</th><th>VAM</th><th>W/kg</th><th>Δ PR</th></tr></thead>
                 <tbody id="climbs-body"></tbody>
               </table>
             </div>
@@ -108,10 +109,11 @@ export async function renderActivity(activityId) {
 
   const details = await fetchActivityDetails(activityId);
   const records = await fetchActivityRecords(activityId, 'distance,altitude,hr,speed,timestamp,position_lat,position_long,cadence,power,temperature', 3000);
+  const riderKg = await loadRiderWeightKg();
 
   renderHeader(details, activityId);
   setupDeleteActivity(activityId, details.activity);
-  renderClimbsTable(activityId, details.climbs || [], records);
+  renderClimbsTable(activityId, details.climbs || [], records, riderKg);
   setupJournal(activityId);
   renderLapsTable(details.laps || []);
   renderMap(records, details.climbs || []);
@@ -264,7 +266,7 @@ async function setupJournal(activityId) {
   });
 }
 
-function renderClimbsTable(activityId, climbs, records) {
+function renderClimbsTable(activityId, climbs, records, riderKg) {
   const tbody = document.getElementById('climbs-body');
   const noClimbs = document.getElementById('no-climbs');
   tbody.innerHTML = '';
@@ -278,6 +280,7 @@ function renderClimbsTable(activityId, climbs, records) {
   for (let i = 0; i < climbs.length; i++) {
     const c = climbs[i];
     const vam = computeVam(c, records);
+    const wkg = estimateClimbWkg(c, records.filter(r => r.distance >= c.start_distance_m && r.distance <= c.end_distance_m), riderKg);
     const key = climbKey(activityId, c.start_distance_m, c.end_distance_m);
     const row = document.createElement('tr');
     row.dataset.climbKey = key;
@@ -299,6 +302,7 @@ function renderClimbsTable(activityId, climbs, records) {
       <td>${fmtGrade(c.avg_grade_percent)}</td>
       <td>${c.steepest_100m_grade != null ? fmtGrade(c.steepest_100m_grade) : '-'}</td>
       <td>${vam ? Math.round(vam) + ' m/h' : '-'}</td>
+      <td>${wkg != null ? `${wkg.toFixed(2)} W/kg` : '-'}</td>
       <td class="climb-pr-cell">…</td>
     `;
     if (c.validated_climb_id) {
