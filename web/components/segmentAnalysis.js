@@ -1,4 +1,5 @@
 import { loadRiderWeightKg as sharedLoadRiderWeightKg, estimateWkg } from '../utils/estPower.js';
+import { elevationDataset, elevationScale } from '../utils/elevChart.js';
 
 const BIN_SIZES = [200, 500, 1000];
 
@@ -25,16 +26,6 @@ function pyRound(x) {
   if (diff > 0.5) return floor + 1;
   if (diff < 0.5) return floor;
   return floor % 2 === 0 ? floor : floor + 1;
-}
-
-function gradeColor(grade) {
-  if (grade == null) return '#0d6efd';
-  if (grade < 0) return '#6c757d';
-  if (grade < 3) return '#198754';
-  if (grade < 6) return '#20c997';
-  if (grade < 9) return '#ffc107';
-  if (grade < 12) return '#fd7e14';
-  return '#dc3545';
 }
 
 function interpolateAltitude(segment, distM) {
@@ -223,7 +214,7 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
 
   const render = async () => {
     const meta = METRICS[metric];
-    const { bins } = computeBins(records, startM, endM, binSizeM, riderKg);
+    const { bins, segment } = computeBins(records, startM, endM, binSizeM, riderKg);
     const canvas = modalEl.querySelector('#segment-analysis-chart');
     const noData = modalEl.querySelector('#segment-analysis-no-data');
     if (!bins.length) {
@@ -235,95 +226,158 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
     canvas.classList.remove('d-none');
     noData.classList.add('d-none');
 
-    // One bar per bin. Chart.js centers each bar on its data x; anchor the
-    // bar at the bin start and give it the full bin width so each bar
-    // exactly fills its bin (first bar flush with the axis).
-    const data = bins.map(b => ({
-      x: b.startDistKm + (b.endDistKm - b.startDistKm) / 2,
-      y: b[metric],
-      _w: (b.endDistKm - b.startDistKm),
-    }));
+    // One dot per bin, at the bin centre, on the metric axis.
+    const binCenter = b => b.startDistKm + (b.endDistKm - b.startDistKm) / 2;
+    const currentData = bins
+      .filter(b => b[metric] != null)
+      .map(b => ({ x: binCenter(b), y: b[metric], _bin: b }));
 
-    // Per-bin avg/best across ALL attempts (current one included), when
-    // ticked. Computed here, drawn by the refLines plugin as dotted
-    // horizontal segments spanning each bin, so they never shift the bars.
-    let avgValues = null;
-    let bestValues = null;
-    if (showAvg || showBest) {
-      const perBin = {};
-      const collect = mb => {
-        if (mb[metric] == null) return;
-        (perBin[mb.idx] = perBin[mb.idx] || []).push(mb[metric]);
-      };
-      bins.forEach(collect);
-      const others = attempts || [];
-      for (const m of others) {
-        const mRecs = await getAttemptRecords(m);
-        if (!mRecs.length) continue;
-        const { bins: mBins } = computeBins(mRecs, m.start_distance_m, m.end_distance_m, binSizeM, riderKg);
-        mBins.forEach(collect);
-      }
-      // Values indexed by bin position in the current segment's bins array.
-      const pick = fn => bins.map(b => {
+    // Other attempts: one grey dot per bin per attempt.
+    const othersData = [];
+    const perBin = {};   // for avg/best, populated always (cheap)
+    const collect = (mb, list) => {
+      if (mb[metric] == null) return;
+      (perBin[mb.idx] = perBin[mb.idx] || []).push(mb[metric]);
+      if (list) list.push({ x: mb.startDistKm + (mb.endDistKm - mb.startDistKm) / 2, y: mb[metric] });
+    };
+    bins.forEach(b => collect(b, null));
+    const others = attempts || [];
+    for (const m of others) {
+      const mRecs = await getAttemptRecords(m);
+      if (!mRecs.length) continue;
+      const { bins: mBins } = computeBins(mRecs, m.start_distance_m, m.end_distance_m, binSizeM, riderKg);
+      const pts = [];
+      mBins.forEach(mb => collect(mb, pts));
+      othersData.push(...pts);
+    }
+
+    // Per-bin average and best across ALL attempts (current included),
+    // dots at the same bin centres when ticked.
+    let avgData = null;
+    let bestData = null;
+    const pick = fn => bins
+      .map(b => {
         const vals = perBin[b.idx];
-        return vals && vals.length ? fn(vals) : null;
-      });
-      if (showAvg) avgValues = pick(vals => vals.reduce((s, v) => s + v, 0) / vals.length);
-      if (showBest) {
-        // Best = best value per bin, relative to the metric's direction
-        // (fastest speed, lowest HR, etc).
-        bestValues = pick(vals => meta.higherIsBetter === false ? Math.min(...vals) : Math.max(...vals));
-      }
+        return vals && vals.length ? { x: binCenter(b), y: fn(vals) } : null;
+      })
+      .filter(v => v != null);
+    if (showAvg) avgData = pick(vals => vals.reduce((s, v) => s + v, 0) / vals.length);
+    if (showBest) {
+      // Best = best value per bin, relative to the metric's direction
+      // (fastest speed, lowest HR, etc).
+      bestData = pick(vals => meta.higherIsBetter === false ? Math.min(...vals) : Math.max(...vals));
     }
 
     if (chart) chart.destroy();
     const ctx = canvas.getContext('2d');
-    chart = new window.Chart(ctx, {
-      type: 'bar',
-      data: {
-        datasets: [
-          {
-            label: meta.label,
-            data,
-            backgroundColor: bins.map(b => gradeColor(b.grade)),
-            borderWidth: 0,
-            // Exact bin width in pixels is computed per-render by the
-            // binBars plugin (barThickness as a number would not adapt to
-            // resize). Default auto-width from midpoint spacing matches
-            // the bin width already.
-          },
-        ]
+
+    const datasets = [];
+    // Elevation area behind everything, on its own axis.
+    if (segment.length) {
+      datasets.push(elevationDataset(segment, [[startM, endM]]));
+    }
+    const metricSets = [
+      {
+        label: meta.label,
+        data: currentData,
+        type: 'scatter',
+        showLine: false,
+        pointRadius: 5,
+        pointBackgroundColor: '#0d6efd',
+        pointBorderColor: '#0d6efd',
+        order: 1,
       },
+      othersData.length ? {
+        label: 'Other attempts',
+        data: othersData,
+        type: 'scatter',
+        showLine: false,
+        pointRadius: 3,
+        pointBackgroundColor: 'rgba(108, 117, 125, 0.55)',
+        pointBorderColor: 'transparent',
+        order: 2,
+      } : null,
+      avgData ? {
+        label: 'Average',
+        data: avgData,
+        type: 'line',
+        showLine: true,
+        pointRadius: 4,
+        pointBackgroundColor: '#dc3545',
+        pointBorderColor: '#dc3545',
+        borderColor: 'rgba(220, 53, 69, 0.5)',
+        borderWidth: 1,
+        tension: 0.2,
+        order: 3,
+      } : null,
+      bestData ? {
+        label: 'Best',
+        data: bestData,
+        type: 'line',
+        showLine: true,
+        pointRadius: 5,
+        pointBackgroundColor: '#ffd700',
+        pointBorderColor: '#b8860b',
+        borderColor: 'rgba(255, 215, 0, 0.45)',
+        borderWidth: 1,
+        tension: 0.2,
+        order: 0,
+      } : null,
+    ].filter(Boolean);
+    datasets.push(...metricSets);
+
+    // Metric axis range: cover dots + ref lines without clipping.
+    const refVals = [...(avgData || []), ...(bestData || [])].map(v => v.y);
+    const dotVals = [...currentData.map(v => v.y), ...refVals].filter(v => v != null);
+    const beginAtZero = metric === 'vam' || metric === 'avg_cadence' || metric === 'avg_power' || metric === 'est_wkg';
+    let yCfg = { title: { display: true, text: meta.axis }, beginAtZero };
+    if (dotVals.length) {
+      const lo = Math.min(...dotVals);
+      const hi = Math.max(...dotVals);
+      const pad = (hi - lo) * 0.12 || 1;
+      yCfg.min = beginAtZero ? 0 : lo - pad;
+      yCfg.max = hi + pad;
+    }
+
+    chart = new window.Chart(ctx, {
+      type: 'scatter',
+      data: { datasets },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         parsing: false,
-        layout: { padding: { top: 20 } },
+        interaction: { mode: 'nearest', axis: 'x', intersect: false },
         plugins: {
-          legend: { display: false },
-          gradeLabels: { bins },
-          refLines: { bins, avgValues, bestValues },
+          legend: {
+            display: true,
+            labels: {
+              boxWidth: 10,
+              usePointStyle: true,
+              filter: item => item.datasetIndex > 0,   // hide elevation entry
+            },
+          },
           tooltip: {
             callbacks: {
               title: items => {
-                const b = bins[items[0].dataIndex];
-                return `km ${b.startDistKm.toFixed(2)} – ${b.endDistKm.toFixed(2)}`;
+                const b = items[0]?.raw?._bin;
+                return b ? `km ${b.startDistKm.toFixed(2)} – ${b.endDistKm.toFixed(2)}` : `km ${items[0]?.parsed?.x?.toFixed(2) ?? ''}`;
               },
               label: item => {
-                const b = bins[item.dataIndex];
+                const b = item.raw?._bin;
+                if (!b) return `${item.dataset.label}: ${item.parsed.y.toFixed(meta.decimals)}${meta.unit}`;
                 const fmt = (label, v, unit, dec = 0) =>
                   `${label}: ${v == null ? '-' : v.toFixed(dec)}${unit}`;
                 return [
-                  fmt(meta.label, b[metric], meta.unit, meta.decimals),
+                  `${item.dataset.label}: ${fmt('', b[metric], meta.unit, meta.decimals).replace(': ', '')}`,
                   fmt('Gain', b.gain, ' m', 0),
                   fmt('Grade', b.grade, '%', 1),
                   fmt('Duration', b.duration, ' s', 0),
-                  fmt('Avg speed', b.avg_speed, ' km/h', 1),
-                  fmt('Avg HR', b.avg_hr, ' bpm'),
-                  fmt('VAM', b.vam, ' m/h'),
-                  hasPower ? fmt('Avg power', b.avg_power, ' W') : null,
-                  b.est_wkg != null ? fmt('Est. W/kg', b.est_wkg, ' W/kg', 2) : null,
-                  hasCadence ? fmt('Avg cadence', b.avg_cadence, ' rpm') : null,
+                  metric === 'avg_speed' ? null : fmt('Avg speed', b.avg_speed, ' km/h', 1),
+                  metric === 'avg_hr' ? null : fmt('Avg HR', b.avg_hr, ' bpm'),
+                  metric === 'vam' ? null : fmt('VAM', b.vam, ' m/h'),
+                  hasPower && metric !== 'avg_power' ? fmt('Avg power', b.avg_power, ' W') : null,
+                  b.est_wkg != null && metric !== 'est_wkg' ? fmt('Est. W/kg', b.est_wkg, ' W/kg', 2) : null,
+                  hasCadence && metric !== 'avg_cadence' ? fmt('Avg cadence', b.avg_cadence, ' rpm') : null,
                 ].filter(Boolean);
               }
             }
@@ -335,83 +389,12 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
             min: 0,
             max: totalM / 1000,
             title: { display: true, text: 'Distance (km)' },
-            // Ticks at bin boundaries: 0 to the left of the first bar,
-            // 0.2 to its right, etc.
-            ticks: { stepSize: binSizeM / 1000, autoSkip: false, includeBounds: true, maxRotation: 0, minRotation: 0 }
+            ticks: { maxTicksLimit: 10, maxRotation: 0, minRotation: 0 }
           },
-          y: (() => {
-            const cfg = {
-              title: { display: true, text: meta.axis },
-              beginAtZero: metric === 'vam' || metric === 'avg_cadence' || metric === 'avg_power' || metric === 'est_wkg',
-            };
-            // Widen the range so the avg/best lines are never clipped out
-            // of the visible area.
-            const refVals = [...(avgValues || []), ...(bestValues || [])].filter(v => v != null);
-            if (refVals.length) {
-              const barVals = bins.map(b => b[metric]).filter(v => v != null);
-              const all = [...barVals, ...refVals];
-              const lo = Math.min(...all);
-              const hi = Math.max(...all);
-              const pad = (hi - lo) * 0.1 || 1;
-              cfg.min = cfg.beginAtZero ? 0 : lo - pad;
-              cfg.max = hi + pad;
-            }
-            return cfg;
-          })()
+          y: yCfg,
+          yElev: segment.length ? elevationScale(segment) : { display: false },
         }
-      },
-      plugins: [{
-        id: 'refLines',
-        afterDatasetsDraw(chart, args, options) {
-          // Dotted per-bin segments for average (red) and best (blue),
-          // drawn on top of the bars.
-          const { ctx, scales: { x, y }, chartArea } = chart;
-          const drawValues = (values, color) => {
-            if (!values) return;
-            ctx.save();
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 2;
-            ctx.setLineDash([6, 4]);
-            options.bins.forEach((b, i) => {
-              const v = values[i];
-              if (v == null) return;
-              const px0 = x.getPixelForValue(b.startDistKm);
-              const px1 = x.getPixelForValue(b.endDistKm);
-              const py = y.getPixelForValue(v);
-              if (py < chartArea.top || py > chartArea.bottom) return;
-              ctx.beginPath();
-              ctx.moveTo(px0, py);
-              ctx.lineTo(px1, py);
-              ctx.stroke();
-            });
-            ctx.restore();
-          };
-          drawValues(options.avgValues, '#dc3545');
-          drawValues(options.bestValues, '#0d6efd');
-        }
-      }, {
-        id: 'gradeLabels',
-        afterDatasetsDraw(chart, args, options) {
-          // Grade strip: one label per bar, centered above the bar itself,
-          // at the top of the figure.
-          const bins = options.bins || [];
-          if (!bins.length) return;
-          const bars = chart.getDatasetMeta(0).data;
-          const { ctx, chartArea } = chart;
-          ctx.save();
-          ctx.font = '11px sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillStyle = document.documentElement.getAttribute('data-bs-theme') === 'dark'
-            ? 'rgba(255, 255, 255, 0.75)' : 'rgba(0, 0, 0, 0.75)';
-          bins.forEach((b, i) => {
-            if (b.grade == null) return;
-            const bar = bars[i];
-            if (!bar) return;
-            ctx.fillText(`${b.grade.toFixed(1)}%`, bar.x, chartArea.top - 6);
-          });
-          ctx.restore();
-        }
-      }]
+      }
     });
   };
 
@@ -432,6 +415,8 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
   if (attempts === null && fetchMatches) {
     render();
     await loadAttempts();
+    // Re-render with the other attempts' dots now that we know them.
+    if (attempts.length > 0) render();
     if (attempts.length > 0) {
       const controls = modalEl.querySelector('.d-flex.align-items-center.gap-3.flex-wrap');
       const div = document.createElement('div');
@@ -439,11 +424,11 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
       div.innerHTML = `
         <div class="form-check mb-0">
           <input class="form-check-input" type="checkbox" id="segment-analysis-show-avg">
-          <label class="form-check-label small" for="segment-analysis-show-avg">Average performance <span class="text-danger">— —</span></label>
+          <label class="form-check-label small" for="segment-analysis-show-avg">Average performance <span class="text-danger">•—</span></label>
         </div>
         <div class="form-check mb-0">
           <input class="form-check-input" type="checkbox" id="segment-analysis-show-best">
-          <label class="form-check-label small" for="segment-analysis-show-best">Best performance <span class="text-primary">— —</span></label>
+          <label class="form-check-label small" for="segment-analysis-show-best">Best performance <span style="color:#b8860b">★</span></label>
         </div>`;
       controls.appendChild(div);
       div.querySelectorAll('input[type="checkbox"]').forEach(cb => {
