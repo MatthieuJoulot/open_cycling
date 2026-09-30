@@ -1318,6 +1318,110 @@ def _parse_timestamp(value):
     return None
 
 
+# --- Estimated power (no power meter) -----------------------------------
+# Physics model, same idea as Climbfinder: per 100 m section,
+#   W = (Crr·m·g·cosθ + m·g·sinθ + ½·ρ·CdA·v²) · v / (1 − drivetrain loss)
+# with θ from the section gradient, v the section speed. Climbs only;
+# flat/downhill sections are skipped (no braking/wind model).
+_RIDER_WEIGHT_CACHE = {"value": None, "ts": 0}
+
+def _rider_weight_kg():
+    """Total mass (rider + bike) from Garmin personal info, cached 1 h."""
+    import time as _time
+    now = _time.time()
+    if _RIDER_WEIGHT_CACHE["value"] is not None and now - _RIDER_WEIGHT_CACHE["ts"] < 3600:
+        return _RIDER_WEIGHT_CACHE["value"]
+    w = None
+    try:
+        bio = _load_personal_info().get("biometricProfile", {}) or {}
+        grams = bio.get("weight")
+        if grams:
+            w = round(grams / 1000, 1)   # rider only
+    except Exception:
+        w = None
+    if not w:
+        _RIDER_WEIGHT_CACHE["value"] = None
+        return None
+    total = w + 10.0                     # + bike+kits ~10 kg
+    _RIDER_WEIGHT_CACHE.update({"value": total, "ts": now})
+    return total
+
+
+def _estimate_climb_power(rows, activity_id, cur):
+    """Average watts for the uphill sections of a climb attempt.
+
+    Rows: distance (km), altitude (m), speed (m/s), timestamp.
+    Falls back to distance/timestamp when speed is missing.
+    Returns (avg_watts, w_per_kg) or (None, None).
+    """
+    mass = _rider_weight_kg()
+    if not mass:
+        return None, None
+    pts = []
+    for r in rows:
+        d_km, alt, v, ts = r["distance"], r["altitude"], r["speed"], r["timestamp"]
+        if d_km is None or alt is None or ts is None:
+            continue
+        # activity_records.speed is km/h; physics needs m/s.
+        v_ms = (v / 3.6) if (v is not None and v > 1.8) else None
+        pts.append({"d": d_km * 1000, "a": alt, "v": v_ms,
+                    "t": _parse_timestamp(ts)})
+    if len(pts) < 4:
+        return None, None
+    pts.sort(key=lambda p: p["d"])
+
+    # Records are ~2-5 m apart: too fine for per-section work. Walk the
+    # profile at ~100 m steps, using the first record past each station.
+    stations = []
+    d0, d1 = pts[0]["d"], pts[-1]["d"]
+    n_sections = int((d1 - d0) // 100)
+    j = 0
+    for s in range(n_sections + 1):
+        target = d0 + s * 100
+        while j + 1 < len(pts) and pts[j + 1]["d"] <= target:
+            j += 1
+        stations.append(pts[min(j, len(pts) - 1)])
+    pts = stations
+
+    CRR = 0.005          # rolling resistance, asphalt
+    CDA = 0.32           # aero drag m², hoods position
+    DRIVETRAIN = 0.975   # 2.5% drivetrain loss
+    G = 9.81
+
+    watts_sum = 0.0
+    secs_sum = 0.0
+    for i in range(1, len(pts)):
+        a, b = pts[i - 1], pts[i]
+        dL = b["d"] - a["d"]
+        if dL < 20 or dL > 400:         # gappy data
+            continue
+        dt = b["t"] - a["t"] if a["t"] is not None and b["t"] is not None else None
+        if not dt or dt <= 0:
+            continue
+        v = b["v"] or (dL / dt)
+        if v < 0.5:
+            continue
+        grade = (b["a"] - a["a"]) / dL
+        if grade < 0.015:                # skip flat/descent: no brake model
+            continue
+        theta = math.atan(grade)
+        # Air density from mid-section altitude (barometric, ~1.225 at sea level).
+        alt_mid = (a["a"] + b["a"]) / 2
+        rho = 1.225 * math.exp(-alt_mid / 8500)
+        f_grav = mass * G * math.sin(theta)
+        f_roll = mass * G * CRR * math.cos(theta)
+        f_air = 0.5 * rho * CDA * v * v
+        w = (f_grav + f_roll + f_air) * v / DRIVETRAIN
+        if 0 < w < 2000:
+            watts_sum += w * dt
+            secs_sum += dt
+    if secs_sum < 30:                     # less than half a minute of climbing
+        return None, None
+    avg_w = watts_sum / secs_sum
+    rider_kg = mass - 10.0
+    return round(avg_w, 1), round(avg_w / rider_kg, 2) if rider_kg else None
+
+
 def _compute_climb_performance(activity_id, start_m, end_m):
     conn = _connect_db()
     if conn is None:
@@ -1353,11 +1457,21 @@ def _compute_climb_performance(activity_id, start_m, end_m):
     gain = (max(altitudes) - min(altitudes)) if altitudes else None
     vam = (gain / elapsed * 3600) if gain and elapsed and elapsed > 0 else None
 
+    # Estimated power when no power meter data exists.
+    est_w = est_wkg = None
+    if not power_values:
+        try:
+            est_w, est_wkg = _estimate_climb_power(rows, activity_id, cur)
+        except Exception:
+            est_w = est_wkg = None
+
     return {
         "elapsed_time_s": elapsed,
         "avg_hr": sum(hr_values) / len(hr_values) if hr_values else None,
         "avg_speed": sum(speed_values) / len(speed_values) if speed_values else None,
         "avg_power": sum(power_values) / len(power_values) if power_values else None,
+        "est_power_w": est_w,
+        "est_power_w_per_kg": est_wkg,
         "gain_m": gain,
         "vam": vam,
     }

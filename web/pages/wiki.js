@@ -126,6 +126,21 @@ export async function renderWiki() {
       </div>
 
       <div class="card mb-3">
+        <div class="card-header fw-semibold">Estimated power (no power meter)</div>
+        <div class="card-body">
+          <p>Without a power meter, power for each climb attempt is <strong>estimated from physics</strong>, the way Climbfinder does it: for every ~100 m section of the climb the required wattage is</p>
+          <p class="text-center fs-6"><code>W = (F<sub>gravity</sub> + F<sub>rolling</sub> + F<sub>air</sub>) · v</code></p>
+          <ul>
+            <li><strong>Gravity</strong> uses your total mass (rider weight from your Garmin profile + ~10 kg bike) and the section gradient from the altitude profile.</li>
+            <li><strong>Rolling resistance</strong> assumes asphalt (Crr 0.005); <strong>air drag</strong> assumes a hoods position (CdA 0.32 m²) with air density adjusted for altitude; ~2.5% drivetrain loss.</li>
+            <li>Flat and downhill sections are skipped (no braking or wind model), and the result is the time-weighted average over the climbing sections only.</li>
+          </ul>
+          <p>The climb page shows <strong>Best power (est.)</strong> (W and W/kg), a <strong>Power (est.)</strong> column in the attempt table, and a Power option in the performance history chart. When a ride has real power-meter data it is used instead.</p>
+          <p class="small text-muted mb-0">Accuracy is ±10–20% on steady climbs (steeper = better, gravity dominates). It does not know about wind, drafting, road surface or braking. It needs your weight in the Garmin profile; without it the estimate is skipped.</p>
+        </div>
+      </div>
+
+      <div class="card mb-3">
         <div class="card-header fw-semibold">Normalized HR (fitness trend)</div>
         <div class="card-body">
           <p>Raw average heart rate per ride is hard to compare: a ride up a big climb, in heat or at altitude naturally runs higher than a flat commute, so a simple HR-over-time chart mostly reflects <em>where and when</em> you rode, not how your fitness evolved. The <strong>Normalized HR</strong> chart on the statistics page fixes this the way Strava does for graded runs:</p>

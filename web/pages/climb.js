@@ -13,7 +13,7 @@ const METRICS = {
   elapsed_time_s: { label: 'Time', axis: 'Time', format: fmtDuration, lowerIsBetter: true, value: m => m.elapsed_time_s },
   avg_speed: { label: 'Avg speed', axis: 'Speed', format: fmtSpeed, lowerIsBetter: false, value: m => m.avg_speed },
   vam: { label: 'VAM', axis: 'VAM (m/h)', format: v => `${Math.round(v)} m/h`, lowerIsBetter: false, value: m => m.vam },
-  avg_power: { label: 'Power', axis: 'Power (W)', format: v => `${Math.round(v)} W`, lowerIsBetter: false, value: m => m.avg_power },
+  avg_power: { label: 'Power', axis: 'Power (W)', format: v => `${Math.round(v)} W`, lowerIsBetter: false, value: m => m.est_power_w || m.avg_power },
   avg_hr: { label: 'Avg HR', axis: 'Heart rate (bpm)', format: fmtHr, lowerIsBetter: true, value: m => m.avg_hr },
   speed_hr: { label: 'Speed / HR', axis: 'Speed / HR (km/h/bpm)', format: v => `${v.toFixed(2)} km/h/bpm`, lowerIsBetter: false, value: m => m.avg_hr ? m.avg_speed / m.avg_hr : null },
   inv_time_hr: { label: '1 / (Time · HR)', axis: '1 / (s·bpm)', format: v => v < 0.01 || v > 10000 ? v.toExponential(2) : v.toFixed(4), lowerIsBetter: false, value: m => (m.elapsed_time_s && m.avg_hr) ? 1 / (m.elapsed_time_s * m.avg_hr) : null },
@@ -68,7 +68,7 @@ export async function renderClimb(key) {
               <option value="elapsed_time_s">Time</option>
               <option value="avg_speed">Avg speed</option>
               <option value="vam">VAM</option>
-              <option value="avg_power">Power</option>
+              <option value="avg_power">Power (est.)</option>
               <option value="avg_hr">Avg HR</option>
               <option value="speed_hr">Speed / HR</option>
               <option value="inv_time_hr">1 / (Time · HR)</option>
@@ -88,7 +88,7 @@ export async function renderClimb(key) {
       <div class="table-responsive">
         <table class="table table-sm table-striped">
           <thead>
-            <tr><th>Date</th><th>Ride</th><th>Time</th><th>Δ PR</th><th>VAM</th><th>Avg HR</th><th>Avg speed</th></tr>
+            <tr><th>Date</th><th>Ride</th><th>Time</th><th>Δ PR</th><th>VAM</th><th>Power (est.)</th><th>Avg HR</th><th>Avg speed</th></tr>
           </thead>
           <tbody id="climb-perf-body"></tbody>
         </table>
@@ -704,6 +704,7 @@ async function renderStats(members, count) {
   const latest = members[members.length - 1];
   const bestTime = members.filter(m => m.elapsed_time_s).sort((a, b) => a.elapsed_time_s - b.elapsed_time_s)[0];
   const bestVam = members.filter(m => m.vam).sort((a, b) => b.vam - a.vam)[0];
+  const bestPower = members.filter(m => m.est_power_w || m.avg_power).sort((a, b) => (b.est_power_w || b.avg_power || 0) - (a.est_power_w || a.avg_power || 0))[0];
 
   // Start/end altitude: interpolated on the latest occurrence's records
   // (climbs.json stores distances, not altitudes).
@@ -757,6 +758,7 @@ async function renderStats(members, count) {
     { label: 'Best time', value: bestTime ? fmtDuration(bestTime.elapsed_time_s) : '-' },
     { label: 'Predicted time', value: '…', id: 'stat-predicted' },
     { label: 'Best VAM', value: bestVam ? Math.round(bestVam.vam) + ' m/h' : '-' },
+    { label: 'Best power (est.)', value: bestPower ? `${Math.round(bestPower.est_power_w || bestPower.avg_power)} W · ${((bestPower.est_power_w_per_kg) || (bestPower.avg_power && (bestPower.avg_power / 70))).toFixed(1)} W/kg` : '-', title: 'Estimated from speed, gradient and body weight (no power meter needed)' },
   ];
 
   container.innerHTML = stats.map(s => `
@@ -827,6 +829,7 @@ function renderPerformances(members) {
       <td>${m.elapsed_time_s ? fmtDuration(m.elapsed_time_s) : '-'}</td>
       <td>${deltaCell}</td>
       <td>${m.vam ? Math.round(m.vam) + ' m/h' : '-'}</td>
+      <td>${(m.est_power_w || m.avg_power) ? Math.round(m.est_power_w || m.avg_power) + ' W' : '-'}</td>
       <td>${fmtHr(m.avg_hr)}</td>
       <td>${fmtSpeed(m.avg_speed)}</td>
     `;
