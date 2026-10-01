@@ -1,13 +1,12 @@
 import { fetchClimbMatches, fetchAllClimbNames, fetchActivityRecords, saveClimbName, validateClimb, fetchValidatedClimbs, fetchStats } from '../utils/api.js';
 import { openSegmentEditor } from '../components/segmentEditor.js?v=2';
 import { attachFullscreen } from '../utils/fullscreen.js';
+import { renderSegmentAnalysis } from '../components/segmentAnalysis.js';
 import { fmtDate, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr, climbKey, pyRound } from '../utils/format.js';
 
 let currentSegment = [];
 let currentStartDistanceM = 0;
-let selectedBinSizeM = null;
 
-const BIN_SIZES = [200, 500, 1000];
 
 const METRICS = {
   elapsed_time_s: { label: 'Time', axis: 'Time', format: fmtDuration, lowerIsBetter: true, value: m => m.elapsed_time_s },
@@ -43,16 +42,9 @@ export async function renderClimb(key) {
       </div>
 
       <div class="card mb-3">
-        <div class="card-header fw-semibold">Elevation profile</div>
+        <div class="card-header fw-semibold">Per-bin analysis</div>
         <div class="card-body p-2">
-          <div style="height: 240px; position: relative;">
-            <canvas id="climb-elevation-chart"></canvas>
-          </div>
-          <div class="mt-2 d-flex align-items-center gap-2">
-            <label for="zone-bin" class="small text-muted mb-0">Bin size</label>
-            <input type="range" id="zone-bin" min="0" max="2" step="1" value="0" class="form-range" style="width: 200px;">
-            <span id="zone-bin-value" class="small text-muted">200 m</span>
-          </div>
+          <div id="climb-segment-analysis"></div>
         </div>
       </div>
 
@@ -115,7 +107,7 @@ export async function renderClimb(key) {
   attachFullscreen(document.getElementById('climb-map')?.closest('.card'), document.getElementById('climb-map'), {
     onResize: (el) => { if (el._climbMap) el._climbMap.invalidateSize(); }
   });
-  attachFullscreen(document.getElementById('climb-elevation-chart')?.closest('.card'), document.getElementById('climb-elevation-chart')?.closest('.card-body'));
+  attachFullscreen(document.getElementById('climb-segment-analysis')?.closest('.card'), document.getElementById('climb-segment-analysis'));
   attachFullscreen(document.getElementById('climb-perf-chart')?.closest('.card'), document.getElementById('climb-perf-chart')?.closest('.card'), { floatCard: true });
 
   const metricSelect = document.getElementById('perf-metric');
@@ -125,16 +117,6 @@ export async function renderClimb(key) {
   const regressionCheck = document.getElementById('perf-regression');
   if (regressionCheck) {
     regressionCheck.addEventListener('change', () => renderPerfChart(members));
-  }
-
-  const binSlider = document.getElementById('zone-bin');
-  const binValue = document.getElementById('zone-bin-value');
-  if (binSlider) {
-    binSlider.addEventListener('input', () => {
-      selectedBinSizeM = BIN_SIZES[parseInt(binSlider.value)];
-      if (binValue) binValue.textContent = `${selectedBinSizeM} m`;
-      if (currentSegment.length) renderSegmentElevation(currentSegment, currentStartDistanceM);
-    });
   }
 }
 
@@ -150,7 +132,20 @@ function renderSegmentDetails(members) {
       );
       currentStartDistanceM = rep.start_distance_m;
       renderSegmentMap(mapContainer, currentSegment);
-      renderSegmentElevation(currentSegment, currentStartDistanceM);
+      // Per-bin analysis inline, directly on the climb page. The current
+      // attempt is not highlighted here (the page is about the climb,
+      // not one ride): grey dots per attempt, avg/best toggles instead.
+      renderSegmentAnalysis(document.getElementById('climb-segment-analysis'), {
+        climb: {
+          activity_id: rep.activity_id,
+          start_distance_m: rep.start_distance_m,
+          end_distance_m: rep.end_distance_m,
+        },
+        records,
+        fetchMatches: fetchClimbMatches,
+        fetchRecords: fetchActivityRecords,
+        showCurrent: false,
+      });
     })
     .catch(err => {
       console.error('Failed to load segment details', err);
@@ -442,257 +437,6 @@ function cotacolScore(segment) {
   }
   if (nStations * SECTION < 100) return null;
   return total;
-}
-
-function gradeColor(grade) {
-  if (grade < -1) return '#0d6efd';      // blue downhill
-  if (grade < 1) return '#2ecc71';       // bright green flat
-  if (grade < 3) return '#f7d794';       // pale yellow
-  if (grade < 6) return '#ffc107';       // gold
-  if (grade < 9) return '#fd7e14';       // orange
-  if (grade < 12) return '#dc3545';      // red
-  if (grade < 20) return '#6f42c1';      // purple
-  return '#000000';                      // black
-}
-
-function interpolateAltitude(segment, distanceM) {
-  for (let i = 0; i < segment.length - 1; i++) {
-    const a = segment[i], b = segment[i + 1];
-    if (a.altitude == null || b.altitude == null) continue;
-    if (distanceM >= a.distance && distanceM <= b.distance) {
-      if (b.distance === a.distance) return a.altitude;
-      const t = (distanceM - a.distance) / (b.distance - a.distance);
-      return a.altitude + t * (b.altitude - a.altitude);
-    }
-  }
-  const rec = segment.find(r => r.altitude != null && r.distance >= distanceM);
-  if (rec) return rec.altitude;
-  for (let i = segment.length - 1; i >= 0; i--) {
-    if (segment[i].altitude != null) return segment[i].altitude;
-  }
-  return null;
-}
-
-function renderSegmentElevation(segment, startDistanceM) {
-  const canvas = document.getElementById('climb-elevation-chart');
-  if (!canvas || segment.length < 2) return;
-
-  const totalM = Math.max(...segment.map(r => r.distance)) - startDistanceM;
-  if (selectedBinSizeM == null) {
-    if (totalM < 1000) selectedBinSizeM = 200;
-    else if (totalM < 2000) selectedBinSizeM = 500;
-    else selectedBinSizeM = 1000;
-  }
-  const binSizeM = selectedBinSizeM;
-  const binSlider = document.getElementById('zone-bin');
-  const binValue = document.getElementById('zone-bin-value');
-  if (binSlider) {
-    binSlider.value = BIN_SIZES.indexOf(binSizeM);
-  }
-  if (binValue) binValue.textContent = `${binSizeM} m`;
-
-  const buckets = [];
-  let k = 0;
-  while (k * binSizeM < totalM) {
-    const bucketStart = startDistanceM + k * binSizeM;
-    const bucketEnd = Math.min(startDistanceM + (k + 1) * binSizeM, startDistanceM + totalM);
-    let startIdx = -1;
-    let endIdx = -1;
-    for (let i = 0; i < segment.length; i++) {
-      const r = segment[i];
-      if (r.altitude == null) continue;
-      if (r.distance >= bucketStart && r.distance <= bucketEnd) {
-        if (startIdx === -1) startIdx = i;
-        endIdx = i;
-      }
-    }
-    if (startIdx !== -1) {
-      const startAlt = segment[startIdx].altitude;
-      const endAlt = segment[endIdx].altitude;
-      const length = bucketEnd - bucketStart;
-      const gain = endAlt - startAlt;
-      const grade = length > 0 ? (gain / length) * 100 : 0;
-      buckets.push({
-        km: k + 1,
-        startIdx,
-        endIdx,
-        startDistKm: (bucketStart - startDistanceM) / 1000,
-        endDistKm: (bucketEnd - startDistanceM) / 1000,
-        grade,
-        length,
-      });
-    }
-    k++;
-  }
-
-  let points = segment.filter(r => r.altitude != null).map(r => ({
-    x: (r.distance - startDistanceM) / 1000,
-    y: r.altitude,
-  }));
-
-  const boundaryDists = new Set();
-  for (const b of buckets) {
-    boundaryDists.add(b.startDistKm);
-    boundaryDists.add(b.endDistKm);
-  }
-  for (const distKm of boundaryDists) {
-    const alt = interpolateAltitude(segment, startDistanceM + distKm * 1000);
-    if (alt != null) points.push({ x: distKm, y: alt });
-  }
-  points.sort((a, b) => a.x - b.x);
-  const deduped = [];
-  for (const p of points) {
-    const last = deduped[deduped.length - 1];
-    if (last && Math.abs(p.x - last.x) < 1e-6) continue;
-    deduped.push(p);
-  }
-  points = deduped;
-
-  const totalKm = totalM / 1000;
-  const binSizeKm = binSizeM / 1000;
-
-  if (window.climbElevationChart) window.climbElevationChart.destroy();
-  const ctx = canvas.getContext('2d');
-  window.climbElevationChart = new window.Chart(ctx, {
-    type: 'line',
-    data: {
-      datasets: [{
-        label: 'Elevation (m)',
-        data: points,
-        borderWidth: 3,
-        pointRadius: 0,
-        fill: false,
-        backgroundColor: 'transparent',
-        tension: 0,
-        segment: {
-          borderColor: ctx => {
-            const midX = (ctx.p0.parsed.x + ctx.p1.parsed.x) / 2;
-            const bucket = buckets.find(b => midX >= b.startDistKm && midX <= b.endDistKm);
-            return bucket ? gradeColor(bucket.grade) : '#0d6efd';
-          }
-        }
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      parsing: false,
-      // Space between the lowest curve point and the x-axis so the grade
-      // labels painted under the curve never clip against the axis.
-      layout: { padding: { bottom: 28 } },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            title: items => `km ${items[0].parsed.x.toFixed(2)}`,
-            label: item => {
-              const midX = item.parsed.x;
-              const b = (buckets || []).find(bb => midX >= bb.startDistKm && midX <= bb.endDistKm);
-              const gradeLine = b ? ` · grade ${b.grade.toFixed(1)}%` : '';
-              return `${item.raw.y.toFixed(0)} m${gradeLine}`;
-            }
-          }
-        },
-        segmentZones: { buckets, segment, startDistanceM }
-      },
-      scales: {
-        x: {
-          type: 'linear',
-          min: 0,
-          max: totalKm,
-          title: { display: true, text: 'Distance (km)' },
-          ticks: { stepSize: binSizeKm, autoSkip: false, maxRotation: 45, minRotation: 30 }
-        },
-        y: { title: { display: true, text: 'Elevation (m)' } }
-      }
-    },
-    plugins: [{
-      id: 'segmentZones',
-      beforeDatasetsDraw(chart, args, options) {
-        const { ctx, scales: { x, y }, chartArea } = chart;
-        const buckets = options.buckets || [];
-        const segment = options.segment || [];
-        const startDistanceM = options.startDistanceM || 0;
-        ctx.save();
-        for (const b of buckets) {
-          if (b.length <= 0 || b.startIdx < 0) continue;
-          const bucketStartM = startDistanceM + b.startDistKm * 1000;
-          const bucketEndM = startDistanceM + b.endDistKm * 1000;
-          const inside = segment.filter(r => r.altitude != null && r.distance >= bucketStartM && r.distance <= bucketEndM);
-          if (inside.length < 1) continue;
-
-          const pts = [];
-          const startY = interpolateAltitude(segment, bucketStartM);
-          if (startY != null) pts.push({ distKm: b.startDistKm, alt: startY });
-          for (const r of inside) {
-            pts.push({ distKm: (r.distance - startDistanceM) / 1000, alt: r.altitude });
-          }
-          const endY = interpolateAltitude(segment, bucketEndM);
-          if (endY != null) pts.push({ distKm: b.endDistKm, alt: endY });
-          if (pts.length < 2) continue;
-
-          const baseColor = gradeColor(b.grade);
-          const r = parseInt(baseColor.slice(1, 3), 16);
-          const g = parseInt(baseColor.slice(3, 5), 16);
-          const bl = parseInt(baseColor.slice(5, 7), 16);
-          ctx.fillStyle = `rgba(${r}, ${g}, ${bl}, 0.5)`;
-          ctx.beginPath();
-          const startX = x.getPixelForValue(b.startDistKm) - 0.5;
-          const endX = x.getPixelForValue(b.endDistKm) + 0.5;
-          ctx.moveTo(startX, chartArea.bottom);
-          ctx.lineTo(startX, y.getPixelForValue(pts[0].alt));
-          for (let i = 1; i < pts.length; i++) {
-            ctx.lineTo(x.getPixelForValue(pts[i].distKm), y.getPixelForValue(pts[i].alt));
-          }
-          ctx.lineTo(endX, chartArea.bottom);
-          ctx.closePath();
-          ctx.fill();
-        }
-        ctx.restore();
-      },
-      afterDatasetsDraw(chart, args, options) {
-        const { ctx, scales: { x, y }, chartArea } = chart;
-        const buckets = options.buckets || [];
-        const segment = options.segment || [];
-        const startDistanceM = options.startDistanceM || 0;
-        ctx.save();
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        for (const b of buckets) {
-          if (b.startIdx === b.endIdx || b.startIdx < 0) continue;
-          const startX = x.getPixelForValue(b.startDistKm);
-          const endX = x.getPixelForValue(b.endDistKm);
-          const zoneWidth = endX - startX;
-          if (zoneWidth < 28) continue;
-          const fontSize = Math.max(8, Math.min(12, Math.floor(zoneWidth / 5)));
-          ctx.font = `bold ${fontSize}px system-ui, -apple-system, sans-serif`;
-          let sumAlt = 0;
-          let count = 0;
-          for (let i = b.startIdx; i <= b.endIdx; i++) {
-            const rec = segment[i];
-            if (rec && rec.altitude != null) { sumAlt += rec.altitude; count++; }
-          }
-          if (count === 0) continue;
-          const midX = (startX + endX) / 2;
-          const curveY = y.getPixelForValue(sumAlt / count);
-          // Place the label below the curve, clamped into the reserved
-          // gap under the chart so it never clips into the x-axis.
-          const midY = Math.min((curveY + chartArea.bottom) / 2, chartArea.bottom - 12);
-          // Contrast-aware text color: white text on dark zone fills,
-          // dark text on light ones, so grades stay readable on every
-          // grade color in both themes.
-          const zone = gradeColor(b.grade);
-          const rr = parseInt(zone.slice(1, 3), 16);
-          const gg = parseInt(zone.slice(3, 5), 16);
-          const bb = parseInt(zone.slice(5, 7), 16);
-          const lum = (0.299 * rr + 0.587 * gg + 0.114 * bb) / 255;
-          ctx.fillStyle = lum < 0.55 ? '#ffffff' : '#212529';
-          ctx.fillText(`${b.grade.toFixed(1)}%`, midX, midY);
-        }
-        ctx.restore();
-      }
-    }]
-  });
 }
 
 async function renderStats(members, count) {

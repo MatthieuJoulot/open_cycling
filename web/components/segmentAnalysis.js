@@ -107,10 +107,7 @@ function computeBins(records, startM, endM, binSizeM, riderKg) {
   return { bins, segment };
 }
 
-export async function openSegmentAnalysis({ climb, records, activityName, fetchMatches, fetchRecords }) {
-  const existing = document.getElementById('segment-analysis-modal');
-  if (existing) existing.remove();
-
+export async function renderSegmentAnalysis(container, { climb, records, fetchMatches, fetchRecords, showCurrent = true }) {
   const startM = climb.start_distance_m;
   const endM = climb.end_distance_m;
   const totalM = endM - startM;
@@ -158,56 +155,32 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
     return attemptsCache[k];
   };
 
-  const modalEl = document.createElement('div');
-  modalEl.id = 'segment-analysis-modal';
-  modalEl.className = 'modal fade';
-  modalEl.setAttribute('tabindex', '-1');
-  modalEl.innerHTML = `
-    <div class="modal-dialog modal-lg">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title">Segment analysis — ${escapeHtml(climb.name || climb.validated_name || activityName || 'Unnamed segment')}</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
-        <div class="modal-body">
-          <div class="d-flex align-items-center gap-3 flex-wrap mb-2">
-            <div>
-              <label class="form-label small mb-0" for="segment-analysis-metric">Metric</label>
-              <select id="segment-analysis-metric" class="form-select form-select-sm">
-                <option value="avg_speed">Avg speed</option>
-                <option value="avg_hr">Avg HR</option>
-                <option value="vam">VAM</option>
-                <option value="avg_power" ${hasPower ? '' : 'disabled'}>Avg power${hasPower ? '' : ' (no data)'}</option>
-                <option value="est_wkg" ${riderKg ? '' : 'disabled'}>Est. power/kg${riderKg ? '' : ' (no weight)'}</option>
-                <option value="avg_cadence" ${hasCadence ? '' : 'disabled'}>Avg cadence${hasCadence ? '' : ' (no data)'}</option>
-              </select>
-            </div>
-            <div class="d-flex align-items-center gap-2">
-              <label class="form-label small mb-0" for="segment-analysis-bin">Bin size</label>
-              <input type="range" id="segment-analysis-bin" min="0" max="2" step="1" value="${BIN_SIZES.indexOf(binSizeM)}" class="form-range" style="width: 140px;">
-              <span id="segment-analysis-bin-value" class="small text-muted">${binSizeM} m</span>
-            </div>
-          </div>
-          <div style="height: 320px; position: relative;">
-            <canvas id="segment-analysis-chart"></canvas>
-            <p id="segment-analysis-no-data" class="text-muted small mb-0 d-none">No data for this segment.</p>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
-        </div>
+  container.innerHTML = `
+    <div class="d-flex align-items-center gap-3 flex-wrap mb-2">
+      <div>
+        <label class="form-label small mb-0" for="segment-analysis-metric">Metric</label>
+        <select id="segment-analysis-metric" class="form-select form-select-sm">
+          <option value="avg_speed">Avg speed</option>
+          <option value="avg_hr">Avg HR</option>
+          <option value="vam">VAM</option>
+          <option value="avg_power" ${hasPower ? '' : 'disabled'}>Avg power${hasPower ? '' : ' (no data)'}</option>
+          <option value="est_wkg" ${riderKg ? '' : 'disabled'}>Est. power/kg${riderKg ? '' : ' (no weight)'}</option>
+          <option value="avg_cadence" ${hasCadence ? '' : 'disabled'}>Avg cadence${hasCadence ? '' : ' (no data)'}</option>
+        </select>
+      </div>
+      <div class="d-flex align-items-center gap-2">
+        <label class="form-label small mb-0" for="segment-analysis-bin">Bin size</label>
+        <input type="range" id="segment-analysis-bin" min="0" max="2" step="1" value="${BIN_SIZES.indexOf(binSizeM)}" class="form-range" style="width: 140px;">
+        <span id="segment-analysis-bin-value" class="small text-muted">${binSizeM} m</span>
       </div>
     </div>
+    <div style="height: 320px; position: relative;">
+      <canvas id="segment-analysis-chart"></canvas>
+      <p id="segment-analysis-no-data" class="text-muted small mb-0 d-none">No data for this segment.</p>
+    </div>
   `;
-  document.body.appendChild(modalEl);
 
-  const modal = new window.bootstrap.Modal(modalEl);
-  modal.show();
-  modalEl.addEventListener('hidden.bs.modal', () => {
-    if (chart) chart.destroy();
-    modalEl.remove();
-  });
-
+  const modalEl = container;
   const metricSelect = modalEl.querySelector('#segment-analysis-metric');
   const binSlider = modalEl.querySelector('#segment-analysis-bin');
   const binValue = modalEl.querySelector('#segment-analysis-bin-value');
@@ -287,7 +260,7 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
       datasets.push(elevationDataset(rel, [[0, totalM]]));
     }
     const metricSets = [
-      {
+      showCurrent ? {
         label: meta.label,
         data: currentData,
         type: 'scatter',
@@ -296,7 +269,7 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
         pointBackgroundColor: '#0d6efd',
         pointBorderColor: '#0d6efd',
         order: 1,
-      },
+      } : null,
       othersData.length ? {
         label: 'Other attempts',
         data: othersData,
@@ -340,7 +313,7 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
     // best) so nothing is clipped out of the visible area.
     const refVals = [...(avgData || []), ...(bestData || [])].map(v => v.y);
     const dotVals = [
-      ...currentData.map(v => v.y),
+      ...(showCurrent ? currentData.map(v => v.y) : []),
       ...othersData.map(v => v.y),
       ...refVals,
     ].filter(v => v != null);
@@ -368,7 +341,7 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
             labels: {
               boxWidth: 10,
               usePointStyle: true,
-              filter: item => item.datasetIndex > 0,   // hide elevation entry
+              filter: item => item.datasetIndex > 0 && !item.text.startsWith('Elevation'),   // hide elevation entry
             },
           },
           tooltip: {
@@ -461,4 +434,41 @@ export async function openSegmentAnalysis({ climb, records, activityName, fetchM
 
 function escapeHtml(str) {
   return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Modal wrapper around the inline renderer, used from the activity page
+// where the analysis is opened per climb row.
+export async function openSegmentAnalysis({ climb, records, activityName, fetchMatches, fetchRecords }) {
+  const existing = document.getElementById('segment-analysis-modal');
+  if (existing) existing.remove();
+
+  const modalEl = document.createElement('div');
+  modalEl.id = 'segment-analysis-modal';
+  modalEl.className = 'modal fade';
+  modalEl.setAttribute('tabindex', '-1');
+  modalEl.innerHTML = `
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Segment analysis — ${escapeHtml(climb.name || climb.validated_name || activityName || 'Unnamed segment')}</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body" id="segment-analysis-body"></div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modalEl);
+  const modal = new window.bootstrap.Modal(modalEl);
+  modal.show();
+  modalEl.addEventListener('hidden.bs.modal', () => modalEl.remove());
+
+  await renderSegmentAnalysis(modalEl.querySelector('#segment-analysis-body'), {
+    climb,
+    records,
+    fetchMatches,
+    fetchRecords,
+  });
 }
