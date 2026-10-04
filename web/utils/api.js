@@ -170,9 +170,15 @@ export async function deleteSegment(id, startDistanceM, endDistanceM) {
   return res.json();
 }
 
-export async function startSync() {
-  const res = await fetch(`${BASE}/api/sync`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to start sync');
+export async function startFetch() {
+  const res = await fetch(`${BASE}/api/sync/fetch`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to start fetch');
+  return res.json();
+}
+
+export async function startAnalyze() {
+  const res = await fetch(`${BASE}/api/sync/analyze`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to start analysis');
   return res.json();
 }
 

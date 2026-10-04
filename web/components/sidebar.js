@@ -1,4 +1,4 @@
-import { fetchProfile, startSync, fetchSyncStatus } from '../utils/api.js';
+import { fetchProfile, startFetch, startAnalyze, fetchSyncStatus } from '../utils/api.js';
 import { fmtDistance, fmtDuration, fmtElevation } from '../utils/format.js';
 
 let profileData = null;
@@ -69,8 +69,11 @@ export async function renderSidebar(activeSection = 'feed') {
         </div>
       </div>
 
-      <button id="sync-btn" class="btn btn-primary w-100 mb-3">
-        <span id="sync-btn-label">Sync new activities</span>
+      <button id="fetch-btn" class="btn btn-primary w-100 mb-2">
+        <span id="fetch-btn-label">⬇ Fetch new activities</span>
+      </button>
+      <button id="analyze-btn" class="btn btn-outline-primary w-100 mb-3">
+        <span id="analyze-btn-label">📊 Analyze activities</span>
       </button>
 
       <div class="list-group">
@@ -85,7 +88,8 @@ export async function renderSidebar(activeSection = 'feed') {
     </div>
   `;
 
-  document.getElementById('sync-btn').addEventListener('click', onSyncClick);
+  document.getElementById('fetch-btn').addEventListener('click', e => onJobClick(e, 'fetch'));
+  document.getElementById('analyze-btn').addEventListener('click', e => onJobClick(e, 'analyze'));
 }
 
 let syncing = false;
@@ -99,32 +103,43 @@ const PHASE_LABELS = {
   failed: 'Failed',
 };
 
-async function onSyncClick() {
-  const btn = document.getElementById('sync-btn');
-  const label = document.getElementById('sync-btn-label');
+const JOB_LABELS = {
+  fetch: { running: 'Fetching…', idle: '⬇ Fetch new activities', done: 'Fetch done' },
+  analyze: { running: 'Analyzing…', idle: '📊 Analyze activities', done: 'Analysis done' },
+};
+
+async function onJobClick(e, kind) {
+  const btn = e.currentTarget;
+  const label = btn.querySelector('span');
   if (!btn || syncing) return;
 
   syncing = true;
-  btn.disabled = true;
-  label.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>Syncing…';
+  document.getElementById('fetch-btn').disabled = true;
+  document.getElementById('analyze-btn').disabled = true;
+  label.innerHTML = `<span class="spinner-border spinner-border-sm me-2" role="status"></span>${JOB_LABELS[kind].running}`;
 
   try {
-    const started = await startSync();
-    if (!started.ok) throw new Error(started.error || 'Failed to start sync');
-    await pollSyncUntilDone(label);
-  } catch (e) {
-    showSyncToast(e.message || 'Sync failed', 'danger');
+    const started = kind === 'fetch' ? await startFetch() : await startAnalyze();
+    if (!started.ok) throw new Error(started.error || 'Failed to start');
+    await pollJobUntilDone(kind, label);
+  } catch (e2) {
+    showSyncToast(e2.message || 'Failed', 'danger');
   } finally {
     syncing = false;
-    const btnAfter = document.getElementById('sync-btn');
-    if (btnAfter) {
-      btnAfter.disabled = false;
-      document.getElementById('sync-btn-label').textContent = 'Sync new activities';
+    const fetchBtn = document.getElementById('fetch-btn');
+    const analyzeBtn = document.getElementById('analyze-btn');
+    if (fetchBtn) {
+      fetchBtn.disabled = false;
+      fetchBtn.querySelector('span').textContent = JOB_LABELS.fetch.idle;
+    }
+    if (analyzeBtn) {
+      analyzeBtn.disabled = false;
+      analyzeBtn.querySelector('span').textContent = JOB_LABELS.analyze.idle;
     }
   }
 }
 
-async function pollSyncUntilDone(label) {
+async function pollJobUntilDone(kind, label) {
   while (true) {
     await new Promise(r => setTimeout(r, 3000));
     let status;
@@ -135,20 +150,24 @@ async function pollSyncUntilDone(label) {
       return;
     }
     if (status.running) {
-      const phase = PHASE_LABELS[status.phase] || 'Syncing…';
+      const phase = PHASE_LABELS[status.phase] || JOB_LABELS[kind].running;
       label.innerHTML = `<span class="spinner-border spinner-border-sm me-2" role="status"></span>${phase}`;
       continue;
     }
     if (status.result && status.result.ok) {
       const r = status.result;
-      const parts = [];
-      parts.push(r.new_activities > 0 ? `${r.new_activities} new ride${r.new_activities > 1 ? 's' : ''}` : 'no new rides');
-      if (r.new_climbs > 0) parts.push(`${r.new_climbs} new climb${r.new_climbs > 1 ? 's' : ''}`);
-      showSyncToast(parts.join(', '), 'success');
-      profileData = null;
-      await renderSidebar(location.hash.replace('#', '') || 'feed');
+      if (kind === 'fetch') {
+        showSyncToast('New activities downloaded and imported. Run Analyze to process them.', 'success');
+      } else {
+        const parts = [];
+        parts.push(r.new_activities > 0 ? `${r.new_activities} new ride${r.new_activities > 1 ? 's' : ''}` : 'no new rides');
+        if (r.new_climbs > 0) parts.push(`${r.new_climbs} new climb${r.new_climbs > 1 ? 's' : ''}`);
+        showSyncToast(parts.join(', '), 'success');
+        profileData = null;
+        await renderSidebar(location.hash.replace('#', '') || 'feed');
+      }
     } else {
-      showSyncToast((status.result && status.result.error) || status.error || 'Sync failed', 'danger');
+      showSyncToast((status.result && status.result.error) || status.error || 'Failed', 'danger');
     }
     return;
   }

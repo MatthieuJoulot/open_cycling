@@ -25,7 +25,7 @@ export async function renderParameters() {
             </div>
             <div class="form-check form-switch mb-3">
               <input class="form-check-input" type="checkbox" id="cfg-sync_latest">
-              <label class="form-check-label" for="cfg-sync_latest">Fast sync (only fetch the latest activities; untick to walk the whole history)</label>
+              <label class="form-check-label" for="cfg-sync_latest">Fast fetch (only fetch the latest activities; untick to walk the whole history)</label>
             </div>
 
             <a class="small text-decoration-none" data-bs-toggle="collapse" href="#advanced-paths" role="button">Advanced paths</a>
