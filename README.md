@@ -9,7 +9,7 @@ A local web app to detect, name, edit, and review cycling climbs from Garmin act
 - Groups equivalent climbs across activities.
 - Shows activity feed, climb list, individual climb performance history, and segment editing on a map.
 - Lets you modify or add segments manually and edit climb names.
-- **Sync button**: downloads and imports new activities from Garmin Connect, then re-analyzes climbs — no command line needed.
+- **Two sync buttons**: **Fetch new activities** downloads and imports new rides from Garmin Connect; **Analyze activities** processes rides not yet analyzed and rebuilds climb groups — no command line needed.
 - **Statistics page**: per-period summary (distance, elevation, time, calories), monthly distance/elevation and rides charts, HR zone distribution, HR/speed/cadence trends, climb category distribution, hardest and favorite climbs.
 - **Best efforts**: fastest time over fixed distances (5 mile, 10K, 10 mile, 20K … 100K), computed with a rolling window over ride records and filtered by period.
 - **Climb map**: all your climbs on a map, colored by category, with popups linking to their history.
@@ -21,13 +21,15 @@ A local web app to detect, name, edit, and review cycling climbs from Garmin act
 ## Requirements
 
 - Python 3.10+ (standard library only, no pip packages needed for the core app)
-- [GarminDB](https://github.com/tgoessler/GarminDB) — syncs activities from Garmin Connect into SQLite. The sync button calls its CLI, so it must be installed and logged in beforehand.
+- [GarminDB](https://github.com/tgoessler/GarminDB) — syncs activities from Garmin Connect into SQLite. **No need to install it beforehand**: it is installed in step 1 of the [Installation](#installation) below.
 - For the **flyover video export** only (everything else works without them):
   - `playwright` Python package (`pip3 install playwright`) — drives an installed Google Chrome in headless mode (no browser download needed).
   - `ffmpeg` on the PATH — assembles the rendered frames into a video.
 - Map libraries (Leaflet, MapLibre GL, Chart.js, Bootstrap) load from CDN in the browser; map and elevation tiles are fetched through the app's own caching proxy — no API keys required.
 
 ## Installation
+
+Everything runs in a single conda environment — the app and GarminDB together.
 
 Clone the repository:
 
@@ -36,18 +38,19 @@ gh repo clone MatthieuJoulot/open_cycling
 cd open_cycling
 ```
 
-### 1. Install GarminDB (one time)
+### 1. Create the environment and install GarminDB (one time)
 
 ```bash
-python3 -m venv ~/garmindb-venv
-~/garmindb-venv/bin/pip install garmindb
+conda create -n opencycling python=3.12 -y
+conda activate opencycling
+pip install garmindb
 ```
 
 The first `garmindb_cli.py` run fails with `Missing or bad config` until the config file exists. Create it:
 
 ```bash
 mkdir -p ~/.GarminDb
-cp ~/garmindb-venv/lib/python3.12/site-packages/garmindb/GarminConnectConfig.json.example ~/.GarminDb/GarminConnectConfig.json
+cp "$(python -c "import garmindb, pathlib; print(pathlib.Path(garmindb.__file__).parent / 'GarminConnectConfig.json.example')")" ~/.GarminDb/GarminConnectConfig.json
 open ~/.GarminDb/GarminConnectConfig.json
 ```
 
@@ -67,20 +70,22 @@ Everything else can stay as is. The downloaded data lands under `~/HealthData` b
 Then download and import your activities:
 
 ```bash
-~/garmindb-venv/bin/garmindb_cli.py --download --import --activities
+garmindb_cli.py --download --import --activities
 ```
 
 This fetches the **1000 most recent** activities (GarminDB's default `download_all_activities` cap). If your history goes back further, download the rest from the app: Parameters → **Download history** → *Scan Garmin Connect* shows what is missing and offers chunked downloads (by year, by 500, or everything) that run in the background.
 
 ### 2. Configure this app
 
-Start the server and configure from the UI — no file editing needed:
+Still in the `opencycling` environment, start the server and configure from the UI — no file editing needed:
 
 ```bash
-python3 backend/serve.py
+python backend/serve.py
 ```
 
 Open `http://127.0.0.1:8080`. With no rides found, the feed shows a **Configure** button that leads to the Parameters page. The only path you normally need is the **HealthData directory** from step 1 (`~/HealthData` by default): the database and FIT file paths are derived from it, and the page shows whether each path exists. Save, then restart the server.
+
+The app finds `garmindb_cli.py` automatically in the active environment, so the `garmindb_cli` config key normally stays empty.
 
 Alternatively, create the file by hand:
 
@@ -88,12 +93,11 @@ Alternatively, create the file by hand:
 cp config.example.json config.json
 ```
 
-Edit `config.json` so `health_data_dir` points at your GarminDB data directory, and `garmindb_cli` at the CLI from step 1:
+Edit `config.json` so `health_data_dir` points at your GarminDB data directory:
 
 ```json
 {
   "health_data_dir": "~/HealthData",
-  "garmindb_cli": "~/garmindb-venv/bin/garmindb_cli.py",
   "port": 8080,
   "sync_latest": true
 }
@@ -113,7 +117,8 @@ Paths may start with `~`. Each value can also be overridden with environment var
 ### 3. Run
 
 ```bash
-python3 backend/serve.py
+conda activate opencycling
+python backend/serve.py
 ```
 
 Open `http://127.0.0.1:8080`.
@@ -124,20 +129,16 @@ If you already ran the app elsewhere (or want a friend's curated cols list), the
 
 ## First sync and later syncs
 
-Both work the same way: click **"Sync new activities"** in the left sidebar — it only fetches the latest activities (`--latest`). For anything older, use the chunked history downloads on the Parameters page.
+Two buttons in the left sidebar, run strictly in this order:
 
-The button:
+1. **⬇ Fetch new activities** — runs `garmindb_cli.py --download --import --activities --analyze --latest`: downloads the most recent activities from Garmin Connect and imports them (already-downloaded ones are skipped without a request). No analysis happens here.
+2. **📊 Analyze activities** — processes rides not analyzed before (so incremental runs are fast) and rebuilds climb groups. Shows a toast with the number of new rides and new climbs.
 
-1. Runs `garmindb_cli.py --download --import --activities --analyze --latest` (fetches the most recent activities from Garmin Connect; already-downloaded ones are skipped without a request).
-2. Re-detects climbs — only rides not analyzed before are processed, so incremental syncs are fast.
-3. Rebuilds climb groups.
-4. Shows a toast with the number of new rides and new climbs.
-
-With `sync_latest` (default `true` in `config.json`), GarminDB only walks the 25 most recent activities (`download_latest_activities` in `~/.GarminDb/GarminConnectConfig.json`) instead of the whole history, so a sync with nothing new takes ~1 minute. If you record more activities than that between two syncs — or want to bulk-import old history — set `"sync_latest": false` and run one full sync.
+With `sync_latest` (default `true` in `config.json`), the fetch only walks the 25 most recent activities (`download_latest_activities` in `~/.GarminDb/GarminConnectConfig.json`) instead of the whole history, so a fetch with nothing new takes ~1 minute. If you record more activities than that between two fetches — or want to bulk-import old history — set `"sync_latest": false` and run one full fetch, or use the chunked history downloads on the Parameters page (those run fetch + analysis together in the background).
 
 ## Files
 
-- `backend/serve.py` — API and static file server (includes `/api/sync`, `/api/stats`, `/api/heatmap`).
+- `backend/serve.py` — API and static file server (includes `/api/sync/fetch`, `/api/sync/analyze`, `/api/stats`, `/api/heatmap`).
 - `backend/analyze_climbs.py` — climb detection logic (incremental).
 - `backend/statistics.py` — statistics page backend, best efforts, per-ride temperature/altitude.
 - `backend/osm_lookup.py` — climb naming from curated list and OSM.
