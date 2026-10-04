@@ -421,8 +421,13 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(json.dumps({"deleted": True}))
             return
 
-        if path == "/api/sync":
-            started = start_sync()
+        if path == "/api/sync/fetch":
+            started = start_job("fetch")
+            self._send_json(json.dumps(started))
+            return
+
+        if path == "/api/sync/analyze":
+            started = start_job("analyze")
             self._send_json(json.dumps(started))
             return
 
@@ -1908,7 +1913,11 @@ def get_sync_status():
         return dict(_sync_state)
 
 
-def start_sync():
+def start_job(kind):
+    """Start a background job: "fetch" (GarminDB download+import) or
+    "analyze" (climb analysis + grouping). Only one job runs at a time."""
+    if kind not in ("fetch", "analyze"):
+        return {"ok": False, "error": f"unknown job kind: {kind}"}
     with _sync_lock:
         if _sync_state["running"]:
             return {"ok": True, "already_running": True, "status": dict(_sync_state)}
@@ -1917,20 +1926,23 @@ def start_sync():
             "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "finished_at": None,
             "phase": "starting",
-            "kind": "sync",
+            "kind": kind,
             "last_log": [],
             "result": None,
             "error": None,
         })
 
-    thread = threading.Thread(target=_run_sync_worker, daemon=True)
+    thread = threading.Thread(target=_run_job_worker, args=(kind,), daemon=True)
     thread.start()
     return {"ok": True, "started": True}
 
 
-def _run_sync_worker():
+def _run_job_worker(kind):
     try:
-        result = run_sync()
+        if kind == "fetch":
+            result = run_fetch()
+        else:
+            result = run_analyze()
         with _sync_lock:
             _sync_state["running"] = False
             _sync_state["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -2065,7 +2077,11 @@ def start_history_download(count):
 
     def worker():
         try:
-            result = run_sync(latest=False)
+            # Chunked bulk download: full GarminDB walk (no --latest), then
+            # the analysis pass over whatever is new in the DB.
+            result = run_fetch(latest=False)
+            if result.get("ok"):
+                result = run_analyze()
             with _sync_lock:
                 _sync_state["running"] = False
                 _sync_state["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -2083,51 +2099,55 @@ def start_history_download(count):
     return {"ok": True, "started": True}
 
 
-def run_sync(latest=None):
-    """Download + import new activities via GarminDB, then refresh analysis.
+def run_fetch(latest=None):
+    """Download + import new activities via GarminDB (no analysis).
 
-    Runs in a background thread started by start_sync(). GarminDB keeps its own
-    download state, but re-checks every activity against Garmin Connect, so a
-    full pass takes minutes even when nothing is new.
+    Runs in a background thread started by start_job("fetch"). GarminDB keeps
+    its own download state, but re-checks every activity against Garmin
+    Connect, so a full pass takes minutes even when nothing is new.
     """
     if latest is None:
         latest = config.SYNC_LATEST
+    if not config.GARMINDB_CLI or not Path(config.GARMINDB_CLI).exists():
+        return {"ok": False, "error": f"garmindb_cli not found: {config.GARMINDB_CLI or '(not configured)'}"}
+
+    cli = Path(config.GARMINDB_CLI)
+    # Use the interpreter next to the CLI when it lives inside a venv.
+    venv_python = cli.parent / "python"
+    interpreter = str(venv_python) if venv_python.exists() else sys.executable
+    cmd = [interpreter, str(cli), "--download", "--import", "--activities", "--analyze"]
+    if latest:
+        # Only fetch the most recent activities (config:
+        # download_latest_activities in GarminConnectConfig.json) instead
+        # of walking the entire history every fetch.
+        cmd.append("--latest")
+    _sync_log("garmindb", "running " + " ".join(cmd))
+    print("fetch: running", " ".join(cmd), flush=True)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    tail = []
+    for line in proc.stdout:
+        print("fetch: garmindb:", line.rstrip(), flush=True)
+        tail.append(line)
+        tail = tail[-20:]
+    proc.wait()
+    if proc.returncode != 0:
+        detail = "".join(tail)[-2000:]
+        print("fetch: garmindb failed:", detail, flush=True)
+        _sync_log("failed", "garmindb download/import failed")
+        return {"ok": False, "error": "garmindb download/import failed", "detail": detail}
+    _sync_log("done", "garmindb download/import done")
+    print("fetch: garmindb done", flush=True)
+    return {"ok": True}
+
+
+def run_analyze():
+    """Incremental climb analysis + group rebuild over existing DB contents.
+
+    Runs in a background thread started by start_job("analyze"). Only rides
+    not analyzed before are processed; works without garmindb_cli.
+    """
     if not config.ACTIVITIES_DB or not config.ACTIVITIES_DB.exists():
         return {"ok": False, "error": f"activities_db not found: {config.ACTIVITIES_DB}"}
-
-    if config.GARMINDB_CLI and Path(config.GARMINDB_CLI).exists():
-        cli = Path(config.GARMINDB_CLI)
-        # Use the interpreter next to the CLI when it lives inside a venv.
-        venv_python = cli.parent / "python"
-        interpreter = str(venv_python) if venv_python.exists() else sys.executable
-        cmd = [interpreter, str(cli), "--download", "--import", "--activities", "--analyze"]
-        if latest:
-            # Only fetch the most recent activities (config:
-            # download_latest_activities in GarminConnectConfig.json) instead
-            # of walking the entire history every sync.
-            cmd.append("--latest")
-        _sync_log("garmindb", "running " + " ".join(cmd))
-        print("sync: running", " ".join(cmd), flush=True)
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        tail = []
-        for line in proc.stdout:
-            print("sync: garmindb:", line.rstrip(), flush=True)
-            tail.append(line)
-            tail = tail[-20:]
-        proc.wait()
-        if proc.returncode != 0:
-            detail = "".join(tail)[-2000:]
-            print("sync: garmindb failed:", detail, flush=True)
-            _sync_log("failed", "garmindb download/import failed")
-            return {"ok": False, "error": "garmindb download/import failed", "detail": detail}
-        _sync_log("analysis", "garmindb done, analyzing climbs")
-        print("sync: garmindb done", flush=True)
-    elif config.GARMINDB_CLI:
-        return {"ok": False, "error": f"garmindb_cli not found: {config.GARMINDB_CLI}"}
-    else:
-        # No CLI configured: just re-run analysis over existing DB contents.
-        print("sync: no garmindb_cli configured, analyzing existing DB", flush=True)
-        _sync_log("analysis", "no garmindb_cli configured, analyzing existing DB")
 
     # Snapshot previously analyzed activities before re-analyzing.
     prev_data = _load_climbs()
@@ -2145,7 +2165,7 @@ def run_sync(latest=None):
     new_ids = {a.get("activity_id") for a in new_data.get("activities", [])}
     new_climb_count = sum(a.get("climb_count", 0) for a in new_data.get("activities", []))
 
-    _sync_log("done", "sync complete")
+    _sync_log("done", "analysis complete")
     return {
         "ok": True,
         "new_activities": len(new_ids - old_ids),

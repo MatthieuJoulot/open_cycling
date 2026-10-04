@@ -7,6 +7,7 @@ layout.
 """
 import json
 import os
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -72,11 +73,21 @@ def _resolve(cfg):
 _cfg = _load()
 _paths = _resolve(_cfg)
 
+
+def _resolve_garmindb_cli(raw):
+    """Explicit path from config, else auto-detect garmindb_cli.py in the
+    same environment as the running interpreter (conda env bin dir)."""
+    if raw:
+        return Path(raw).expanduser()
+    candidate = Path(sys.executable).parent / "garmindb_cli.py"
+    return candidate if candidate.exists() else None
+
+
 ACTIVITIES_DB = _paths["activities_db"]
 GARMIN_DB = _paths["garmin_db"]
 FIT_DIR = _paths["fit_dir"]
 PERSONAL_INFO_JSON = _paths["personal_info_json"]
-GARMINDB_CLI = Path(_cfg["garmindb_cli"]).expanduser() if _cfg["garmindb_cli"] else None
+GARMINDB_CLI = _resolve_garmindb_cli(_cfg["garmindb_cli"])
 PORT = int(_cfg["port"])
 SYNC_LATEST = bool(_cfg["sync_latest"])
 
@@ -105,5 +116,5 @@ def save_config(values):
     GARMIN_DB = _paths["garmin_db"]
     FIT_DIR = _paths["fit_dir"]
     PERSONAL_INFO_JSON = _paths["personal_info_json"]
-    GARMINDB_CLI = Path(_cfg["garmindb_cli"]).expanduser() if _cfg["garmindb_cli"] else None
+    GARMINDB_CLI = _resolve_garmindb_cli(_cfg["garmindb_cli"])
     SYNC_LATEST = bool(_cfg["sync_latest"])
