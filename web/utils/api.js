@@ -160,6 +160,30 @@ export async function saveSegment(id, startDistanceM, endDistanceM, oldStartDist
   return res.json();
 }
 
+export async function fetchReplaceCandidates(id, startDistanceM, endDistanceM) {
+  const res = await fetch(`${BASE}/api/activity/${id}/replace-candidates?start=${startDistanceM}&end=${endDistanceM}`);
+  if (!res.ok) throw new Error('Failed to load replacement candidates');
+  return res.json();
+}
+
+export async function replaceSegmentByGps(id, candidate, oldStartDistanceM, oldEndDistanceM) {
+  const body = {
+    start_lat: candidate.start_lat,
+    start_lon: candidate.start_lon,
+    end_lat: candidate.end_lat,
+    end_lon: candidate.end_lon,
+    old_start_distance_m: oldStartDistanceM,
+    old_end_distance_m: oldEndDistanceM,
+  };
+  const res = await fetch(`${BASE}/api/activity/${id}/segment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error((await res.text()) || 'Failed to replace segment');
+  return res.json();
+}
+
 export async function deleteSegment(id, startDistanceM, endDistanceM) {
   const res = await fetch(`${BASE}/api/activity/${id}/segment/delete`, {
     method: 'POST',

@@ -1,6 +1,7 @@
 import { fetchActivityDetails, fetchActivityRecords, fetchClimbNames, saveClimbName, identifySegments, saveSegment, validateClimb, deleteActivity, fetchClimbMatches, fetchJournal, saveJournalNote, uploadJournalPhoto, deleteJournalPhoto } from '../utils/api.js';
 import { openSegmentEditor } from '../components/segmentEditor.js?v=2';
 import { openSegmentAnalysis } from '../components/segmentAnalysis.js';
+import { openSegmentPicker } from '../components/segmentPicker.js';
 import { attachFullscreen } from '../utils/fullscreen.js';
 import { loadRiderWeightKg, estimateClimbWkg } from '../utils/estPower.js';
 import { fmtDate, fmtTime, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr, climbKey } from '../utils/format.js';
@@ -293,6 +294,7 @@ function renderClimbsTable(activityId, climbs, records, riderKg) {
         <button class="btn btn-sm btn-link py-0 climb-edit-btn" title="Edit name">✎</button>
         <button class="btn btn-sm btn-link py-0 climb-modify-btn" title="Modify segment on map">🗺</button>
         <button class="btn btn-sm btn-link py-0 climb-analysis-btn" title="Per-bin analysis">📊</button>
+        <button class="btn btn-sm btn-link py-0 climb-replace-btn" title="Replace with another segment">🔁</button>
         <button class="btn btn-sm btn-link py-0 climb-validate-btn text-success" title="Validate as canonical named climb">✓</button>
       </td>
       <td><span class="badge bg-secondary category-badge">${c.category}</span></td>
@@ -321,6 +323,7 @@ function renderClimbsTable(activityId, climbs, records, riderKg) {
   tbody.addEventListener('click', e => handleClimbModifyClick(e, records));
   tbody.addEventListener('click', handleClimbValidateClick);
   tbody.addEventListener('click', e => handleClimbAnalysisClick(e, records));
+  tbody.addEventListener('click', e => handleClimbReplaceClick(e, activityId, climbs));
   renderClimbPrDeltas(activityId, climbs, records);
 }
 
@@ -347,6 +350,22 @@ async function handleClimbModifyClick(e, records) {
   } finally {
     btn.disabled = false;
   }
+}
+
+function handleClimbReplaceClick(e, activityId, climbs) {
+  const btn = e.target.closest('.climb-replace-btn');
+  if (!btn) return;
+  const row = btn.closest('tr');
+  if (!row) return;
+  const start = parseFloat(row.dataset.startDistance);
+  const end = parseFloat(row.dataset.endDistance);
+  const climb = climbs.find(c => Math.abs(c.start_distance_m - start) < 1 && Math.abs(c.end_distance_m - end) < 1);
+  if (!climb) return;
+  openSegmentPicker({
+    activityId,
+    climb,
+    onReplaced: () => window.location.reload(),
+  });
 }
 
 function handleClimbAnalysisClick(e, records) {

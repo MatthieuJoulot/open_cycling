@@ -155,6 +155,13 @@ class Handler(SimpleHTTPRequestHandler):
             key = path.split("/")[-2]
             self._send_json(json.dumps(get_climb_matches(key)))
             return
+        if path.startswith("/api/activity/") and path.endswith("/replace-candidates"):
+            activity_id = path.split("/")[-2]
+            query = parse_qs(urlparse(self.path).query)
+            start = float(query.get("start", [0])[0])
+            end = float(query.get("end", [0])[0])
+            self._send_json(json.dumps(get_replace_candidates(activity_id, start, end)))
+            return
         if path.startswith("/api/activity/") and path.endswith("/track"):
             activity_id = path.split("/")[-2]
             self._send_json(json.dumps(get_track(activity_id)))
@@ -379,8 +386,19 @@ class Handler(SimpleHTTPRequestHandler):
             start = payload.get("start_distance_m")
             end = payload.get("end_distance_m")
             if start is None or end is None:
-                self.send_error(400, "Missing start_distance_m or end_distance_m")
-                return
+                # Replacement by GPS: map the replacement segment's GPS
+                # endpoints onto this activity's track.
+                start_gps = payload.get("start_lat")
+                end_gps = payload.get("end_lat")
+                if start_gps is None or end_gps is None:
+                    self.send_error(400, "Missing start_distance_m or end_distance_m")
+                    return
+                points = get_track(activity_id)
+                start = _distance_at_gps(points, payload.get("start_lat"), payload.get("start_lon"))
+                end = _distance_at_gps(points, payload.get("end_lat"), payload.get("end_lon"))
+                if start is None or end is None or end <= start:
+                    self.send_error(400, "Replacement endpoints not found on this activity's track")
+                    return
             segment = _compute_segment(activity_id, start, end)
             if not segment:
                 self.send_error(400, "Could not compute segment for range")
@@ -1107,6 +1125,144 @@ def get_track(activity_id):
 def _compute_segment(activity_id, start_m, end_m):
     points = get_track(activity_id)
     return analyze_climbs.compute_segment(points, start_m, end_m)
+
+
+def _distance_at_gps(points, lat, lon):
+    """Distance along the activity track at the given GPS position.
+
+    Returns the track distance (m) of the record nearest to (lat, lon),
+    or None when the track has no GPS data.
+    """
+    if lat is None or lon is None:
+        return None
+    best = None
+    best_d2 = None
+    for p in points:
+        if p.get("lat") is None or p.get("lon") is None:
+            continue
+        d2 = (p["lat"] - lat) ** 2 + (p["lon"] - lon) ** 2
+        if best_d2 is None or d2 < best_d2:
+            best_d2 = d2
+            best = p
+    return best["d"] if best is not None else None
+
+
+def get_replace_candidates(activity_id, start_m, end_m):
+    """Segments that could replace the climb at (start_m, end_m) in this
+    activity: every other segment in the dataset, scored by geometric
+    similarity (GPS start/end proximity). Suggestions first, then the
+    full list with name / validated status for sorting and filtering in
+    the picker UI.
+    """
+    target = None
+    for c in _find_activity_climbs(str(activity_id)):
+        if abs(c["start_distance_m"] - start_m) < 1 and abs(c["end_distance_m"] - end_m) < 1:
+            target = c
+            break
+    if target is None:
+        return {"ok": False, "error": "climb not found"}
+
+    def similarity(c):
+        # 0 = same start/end points, grows with GPS distance (meters).
+        try:
+            sd = climb_groups._haversine(c["start_lat"], c["start_lon"],
+                                         target["start_lat"], target["start_lon"])
+            ed = climb_groups._haversine(c["end_lat"], c["end_lon"],
+                                         target["end_lat"], target["end_lon"])
+        except (KeyError, TypeError):
+            return None
+        if sd is None or ed is None:
+            return None
+        return sd + ed
+
+    def overlap_penalty(c):
+        # Segments from the same activity that overlap the target are
+        # usually siblings/parts of the target itself, not replacements.
+        if str(c.get("activity_id")) != str(activity_id):
+            return 0
+        cstart, cend = c["start_distance_m"], c["end_distance_m"]
+        if cstart >= end_m or cend <= start_m:
+            return 0
+        return 1
+
+    candidates = []
+    for act in get_climbs_with_overrides().get("activities", []):
+        for c in act.get("climbs", []):
+            if (str(act["activity_id"]) == str(activity_id)
+                    and abs(c["start_distance_m"] - start_m) < 1
+                    and abs(c["end_distance_m"] - end_m) < 1):
+                continue
+            sim = similarity(c)
+            if sim is None:
+                continue
+            candidates.append({
+                "activity_id": act["activity_id"],
+                "activity_name": act.get("name"),
+                "start_time": act.get("start_time"),
+                "start_distance_m": c["start_distance_m"],
+                "end_distance_m": c["end_distance_m"],
+                "start_lat": c["start_lat"],
+                "start_lon": c["start_lon"],
+                "end_lat": c["end_lat"],
+                "end_lon": c["end_lon"],
+                "length_m": c["length_m"],
+                "elevation_gain_m": c["elevation_gain_m"],
+                "avg_grade_percent": c["avg_grade_percent"],
+                "name": c.get("validated_name") or c.get("name"),
+                "validated": bool(c.get("validated_climb_id")),
+                "similarity_m": round(sim, 1),
+                "_overlap": overlap_penalty(c),
+            })
+
+    # Also the validated climbs themselves (they may have no matching
+    # occurrence in any ride's detected list, e.g. different end points).
+    seen_geo = {(round(c["start_lat"], 4), round(c["start_lon"], 4),
+                round(c["end_lat"], 4), round(c["end_lon"], 4)) for c in candidates}
+    for v in validated_store.get_validated_list():
+        geo = (round(v["start_lat"], 4), round(v["start_lon"], 4),
+               round(v["end_lat"], 4), round(v["end_lon"], 4))
+        if geo in seen_geo:
+            continue
+        sim = similarity(v)
+        if sim is None:
+            continue
+        candidates.append({
+            "activity_id": v.get("source_activity_id"),
+            "activity_name": None,
+            "start_time": None,
+            "start_distance_m": v.get("source_start_distance_m"),
+            "end_distance_m": v.get("source_end_distance_m"),
+            "start_lat": v["start_lat"],
+            "start_lon": v["start_lon"],
+            "end_lat": v["end_lat"],
+            "end_lon": v["end_lon"],
+            "length_m": v["length_m"],
+            "elevation_gain_m": v["elevation_gain_m"],
+            "avg_grade_percent": v.get("avg_grade_percent"),
+            "name": v["name"],
+            "validated": True,
+            "similarity_m": round(sim, 1),
+            "_overlap": 0,
+        })
+
+    # Suggestions: most similar, non-overlapping, closest in length.
+    def suggestion_score(c):
+        length_ratio = 0
+        if c["length_m"] and target["length_m"]:
+            length_ratio = abs(c["length_m"] - target["length_m"]) / max(c["length_m"], target["length_m"])
+        return c["similarity_m"] + length_ratio * 1000 + c["_overlap"] * 100000
+    suggestions = sorted(candidates, key=suggestion_score)[:3]
+    for c in candidates:
+        c.pop("_overlap", None)
+    suggestions = [c["name"] or f"Climb in {c['activity_name'] or c['activity_id']}" for c in suggestions]
+
+    return {"ok": True, "target": {
+                "start_distance_m": start_m,
+                "end_distance_m": end_m,
+                "length_m": target["length_m"],
+                "elevation_gain_m": target["elevation_gain_m"]},
+            "candidates": candidates,
+            "suggestions": suggestions}
 
 
 def _recompute_after_segment_change(activity_id):
