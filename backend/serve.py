@@ -3,7 +3,9 @@
 import datetime
 import json
 import math
+import os
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -24,6 +26,7 @@ import osm_lookup
 import regions
 import segment_store
 import statistics
+import sports as sports_registry
 import validated_store
 import journal
 import climb_database
@@ -81,7 +84,13 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(json.dumps(get_climb_groups()))
             return
         if path == "/api/stats":
-            self._send_json(json.dumps(statistics.get_stats(_connect_db)))
+            query = parse_qs(urlparse(self.path).query)
+            sport = (query.get("sport", [None])[0] or "").strip() or None
+            sport = sports_registry.canon(sport) if sport else None
+            from_date = (query.get("from", [None])[0] or "").strip() or None
+            to_date = (query.get("to", [None])[0] or "").strip() or None
+            self._send_json(json.dumps(statistics.get_stats(
+                _connect_db, sport=sport, from_date=from_date, to_date=to_date)))
             return
         if path.startswith("/api/activity/") and path.endswith("/journal"):
             activity_id = path.split("/")[-2]
@@ -111,7 +120,9 @@ class Handler(SimpleHTTPRequestHandler):
             self.wfile.write(data)
             return
         if path == "/api/heatmap":
-            self._send_json(json.dumps(get_heatmap()))
+            query = parse_qs(urlparse(self.path).query)
+            sport = (query.get("sport", ["cycling"])[0] or "cycling").strip()
+            self._send_json(json.dumps(get_heatmap(sport)))
             return
         if path == "/api/climb-db":
             data = climb_database.get_database()
@@ -639,7 +650,7 @@ class Handler(SimpleHTTPRequestHandler):
         with Handler.TILE_FETCH_SEM:
             for attempt in range(3):
                 try:
-                    req = urllib.request.Request(url, headers={"User-Agent": "climb-analyzer/1.0"})
+                    req = urllib.request.Request(url, headers={"User-Agent": "open-sports-analysis/1.0"})
                     with urllib.request.urlopen(req, timeout=15) as resp:
                         data = resp.read()
                     if src == "esri":
@@ -678,30 +689,36 @@ class Handler(SimpleHTTPRequestHandler):
         pass  # quiet
 
 
-HEATMAP_CACHE = APP_ROOT / "cache" / "heatmap.json"
 HEATMAP_MAX_POINTS = 220      # per-ride decimation cap for the polyline
 
 
-def get_heatmap():
-    """Sampled GPS tracks of every cycling ride, one polyline per ride.
+def get_heatmap(sport="cycling"):
+    """Sampled GPS tracks of every activity of one sport, one polyline
+    per activity.
 
-    Cached in cache/heatmap.json, invalidated when the number of cycling
-    activities changes. The client draws each track as a thin low-opacity
-    line; overlapping rides accumulate alpha, so frequently-ridden roads
-    glow — a path-following heat effect (no blur blobs, no off-road dots).
+    Cached per sport in cache/heatmap-<sport>.json, invalidated when the
+    number of activities of that sport changes. The client draws each
+    track as a thin low-opacity line; overlapping rides accumulate
+    alpha, so frequently-ridden roads glow — a path-following heat
+    effect (no blur blobs, no off-road dots).
     """
     conn = _connect_db()
     if conn is None:
         return {"tracks": [], "generated_at": 0}
+    sport = sports_registry.canon(sport)
+    db_sports = sports_registry.db_names([sport])
+    placeholders = ",".join("?" for _ in db_sports)
+    cache_path = APP_ROOT / "cache" / f"heatmap-{sport}.json"
     try:
         n_activities = conn.execute(
-            "SELECT COUNT(*) FROM activities WHERE sport = 'cycling'"
+            f"SELECT COUNT(*) FROM activities WHERE sport IN ({placeholders})",
+            tuple(db_sports),
         ).fetchone()[0]
     except Exception:
         n_activities = 0
 
     try:
-        cache = json.loads(HEATMAP_CACHE.read_text(encoding="utf-8"))
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
     except Exception:
         cache = {}
     if cache.get("activities") == n_activities:
@@ -711,14 +728,15 @@ def get_heatmap():
         }
 
     rows = conn.execute(
-        """
+        f"""
         SELECT r.activity_id, r.position_lat, r.position_long
         FROM activity_records r
         JOIN activities a ON a.activity_id = r.activity_id
         WHERE r.position_lat IS NOT NULL AND r.position_long IS NOT NULL
-          AND a.sport = 'cycling'
+          AND a.sport IN ({placeholders})
         ORDER BY r.activity_id, r.record
-        """
+        """,
+        tuple(db_sports),
     ).fetchall()
 
     tracks = []
@@ -740,8 +758,8 @@ def get_heatmap():
         "tracks": tracks,
     }
     try:
-        HEATMAP_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        HEATMAP_CACHE.write_text(
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
             json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
@@ -1479,6 +1497,13 @@ def _parse_timestamp(value):
     return None
 
 
+# --- Stop trimming --------------------------------------------------------
+# A pause inside a climb should not count as climb time: elapsed time and
+# VAM are computed over MOVING time only. Shared implementation in
+# moving.py (thresholds: speed < 3 km/h for more than 10 s).
+import moving as moving_time
+
+
 # --- Estimated power (no power meter) -----------------------------------
 # Physics model, same idea as Climbfinder: per 100 m section,
 #   W = (Crr·m·g·cosθ + m·g·sinθ + ½·ρ·CdA·v²) · v / (1 − drivetrain loss)
@@ -1606,9 +1631,11 @@ def _compute_climb_performance(activity_id, start_m, end_m):
     if not rows:
         return {}
 
-    first_ts = _parse_timestamp(rows[0]["timestamp"])
-    last_ts = _parse_timestamp(rows[-1]["timestamp"])
-    elapsed = (last_ts - first_ts) if first_ts and last_ts else None
+    # Moving time: raw elapsed minus stops (speed < 3 km/h for more
+    # than 10 s). Pauses inside the climb should not inflate the time,
+    # VAM or the PR ranking.
+    moving, raw_elapsed = moving_time.moving_seconds(rows)
+    elapsed = moving
 
     hr_values = [r["hr"] for r in rows if r["hr"] is not None]
     speed_values = [r["speed"] for r in rows if r["speed"] is not None]
@@ -1628,6 +1655,7 @@ def _compute_climb_performance(activity_id, start_m, end_m):
 
     return {
         "elapsed_time_s": elapsed,
+        "raw_elapsed_time_s": raw_elapsed,
         "avg_hr": sum(hr_values) / len(hr_values) if hr_values else None,
         "avg_speed": sum(speed_values) / len(speed_values) if speed_values else None,
         "avg_power": sum(power_values) / len(power_values) if power_values else None,
@@ -1638,7 +1666,32 @@ def _compute_climb_performance(activity_id, start_m, end_m):
     }
 
 
+# Memoized climb-matches: get_climb_matches recomputes per-member
+# performance (records + estimated power) for every member of the group,
+# which is expensive on big groups (hundreds of attempts, several seconds).
+# Results are cached per key and invalidated whenever climbs.json, the
+# segment edits or the validated registry change (mtime-based).
+_MATCHES_CACHE = {"mtime": {}, "data": {}}
+
+
+def _matches_cache_stamp():
+    stamps = {}
+    for p in (CLIMBS_JSON,
+              Path(__file__).parent.parent / "climb_segments.json",
+              Path(__file__).parent.parent / "validated_climbs.json"):
+        try:
+            stamps[p.name] = p.stat().st_mtime
+        except OSError:
+            stamps[p.name] = None
+    return stamps
+
+
 def get_climb_matches(key):
+    stamps = _matches_cache_stamp()
+    entry = _MATCHES_CACHE["data"].get(key)
+    if entry is not None and _MATCHES_CACHE["mtime"].get(key) == stamps:
+        return entry
+
     groups = climb_groups.ensure_groups()
     group_id = groups.get("key_to_group", {}).get(key)
     member_keys = []
@@ -1667,7 +1720,10 @@ def get_climb_matches(key):
         perf = _compute_climb_performance(c["activity_id"], c["start_distance_m"], c["end_distance_m"])
         results.append({**c, **perf})
     results.sort(key=lambda x: x.get("start_time") or "")
-    return {"group_id": group_id, "count": len(results), "members": results}
+    payload = {"group_id": group_id, "count": len(results), "members": results}
+    _MATCHES_CACHE["data"][key] = payload
+    _MATCHES_CACHE["mtime"][key] = stamps
+    return payload
 
 
 def validate_climb_request(activity_id, start_distance_m, end_distance_m, name):
@@ -1942,30 +1998,60 @@ def get_profile():
             "all_time": {"rides": 0, "distance_km": 0, "moving_time_s": 0, "ascent_m": 0, "descent_m": 0, "climbs": 0},
             "ytd": {"rides": 0, "distance_km": 0, "ascent_m": 0},
             "last_30_days": {"rides": 0, "distance_km": 0, "ascent_m": 0},
+            "per_sport": {},
         }
     cur = conn.cursor()
 
-    # All-time cycling totals
+    enabled = sports_registry.enabled_sports({"sports": config.SPORTS})
+    db_sports = sports_registry.db_names(enabled)
+    placeholders = ",".join("?" for _ in db_sports)
+
+    # All-time totals over every enabled sport.
     row = cur.execute(
-        """
+        f"""
         SELECT COUNT(*) AS n,
                SUM(distance) AS distance_km,
                SUM(ascent) AS ascent_m,
                SUM(descent) AS descent_m
         FROM activities
-        WHERE sport = 'cycling'
-        """
+        WHERE sport IN ({placeholders})
+        """,
+        tuple(db_sports),
     ).fetchone()
 
     moving_seconds = 0
     for r in cur.execute(
-        "SELECT moving_time FROM activities WHERE sport = 'cycling' AND moving_time IS NOT NULL"
+        f"SELECT moving_time FROM activities WHERE sport IN ({placeholders}) AND moving_time IS NOT NULL",
+        tuple(db_sports),
     ):
         moving_seconds += _parse_time_to_seconds(r["moving_time"]) or 0
 
-    # Climbs total
+    # Climbs total (climbs.json only ever contains cycling).
     climbs_data = _load_climbs()
     climb_count = sum(a.get("climb_count", 0) for a in climbs_data.get("activities", []))
+
+    # Per-sport all-time breakdown for the sidebar (aliases grouped).
+    per_sport = {}
+    for srow in cur.execute(
+        f"""
+        SELECT sport,
+               COUNT(*) AS n,
+               SUM(distance) AS distance_km,
+               SUM(ascent) AS ascent_m
+        FROM activities
+        WHERE sport IN ({placeholders})
+        GROUP BY sport
+        """,
+        tuple(db_sports),
+    ):
+        key = sports_registry.canon(srow["sport"])
+        agg = per_sport.setdefault(key, {"activities": 0, "distance_km": 0, "ascent_m": 0})
+        agg["activities"] += srow["n"] or 0
+        agg["distance_km"] += srow["distance_km"] or 0
+        agg["ascent_m"] += srow["ascent_m"] or 0
+    for agg in per_sport.values():
+        agg["distance_km"] = round(agg["distance_km"], 1)
+        agg["ascent_m"] = round(agg["ascent_m"])
 
     # Time-window summaries
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -1974,14 +2060,14 @@ def get_profile():
 
     def window_stats(start):
         r = cur.execute(
-            """
+            f"""
             SELECT COUNT(*) AS n,
                    SUM(distance) AS distance_km,
                    SUM(ascent) AS ascent_m
             FROM activities
-            WHERE sport = 'cycling' AND start_time >= ?
+            WHERE sport IN ({placeholders}) AND start_time >= ?
             """,
-            (start.strftime("%Y-%m-%d %H:%M:%S"),),
+            (*db_sports, start.strftime("%Y-%m-%d %H:%M:%S")),
         ).fetchone()
         return {
             "rides": r["n"] or 0,
@@ -2043,8 +2129,14 @@ def get_profile():
         },
         "ytd": window_stats(ytd_start),
         "last_30_days": window_stats(last30_start),
+        "per_sport": per_sport,
     }
 
+
+# Cap on a garmindb_cli fetch job. A full --latest pass normally takes a
+# few minutes; a stuck Garmin Connect session hangs forever, so the job
+# is killed after this many seconds.
+FETCH_TIMEOUT_S = 45 * 60
 
 _sync_state = {
     "running": False,
@@ -2234,8 +2326,9 @@ def start_history_download(count):
     def worker():
         try:
             # Chunked bulk download: full GarminDB walk (no --latest), then
-            # the analysis pass over whatever is new in the DB.
-            result = run_fetch(latest=False)
+            # the analysis pass over whatever is new in the DB. The walk is
+            # longer than a --latest fetch, so it gets a bigger timeout.
+            result = run_fetch(latest=False, timeout_s=FETCH_TIMEOUT_S * 4)
             if result.get("ok"):
                 result = run_analyze()
             with _sync_lock:
@@ -2255,15 +2348,22 @@ def start_history_download(count):
     return {"ok": True, "started": True}
 
 
-def run_fetch(latest=None):
+def run_fetch(latest=None, timeout_s=None):
     """Download + import new activities via GarminDB (no analysis).
 
     Runs in a background thread started by start_job("fetch"). GarminDB keeps
     its own download state, but re-checks every activity against Garmin
     Connect, so a full pass takes minutes even when nothing is new.
+
+    Hard timeout (default FETCH_TIMEOUT_S): garmindb_cli can hang forever
+    on a stuck Garmin Connect session — its output pipe never closes and
+    the reading loop never sees EOF. On timeout the whole child process
+    group is killed so the job state can't wedge in "running" forever.
     """
     if latest is None:
         latest = config.SYNC_LATEST
+    if timeout_s is None:
+        timeout_s = FETCH_TIMEOUT_S
     if not config.GARMINDB_CLI or not Path(config.GARMINDB_CLI).exists():
         return {"ok": False, "error": f"garmindb_cli not found: {config.GARMINDB_CLI or '(not configured)'}"}
 
@@ -2279,13 +2379,38 @@ def run_fetch(latest=None):
         cmd.append("--latest")
     _sync_log("garmindb", "running " + " ".join(cmd))
     print("fetch: running", " ".join(cmd), flush=True)
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    # New session: garmindb_cli spawns worker processes that inherit the
+    # stdout pipe; killing only the direct child leaves them (and the
+    # open pipe) behind, which is what wedged the job before.
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, start_new_session=True)
+    timed_out = False
+
+    def _reader():
+        nonlocal tail
+        for line in proc.stdout:
+            print("fetch: garmindb:", line.rstrip(), flush=True)
+            tail.append(line)
+            tail = tail[-20:]
+
     tail = []
-    for line in proc.stdout:
-        print("fetch: garmindb:", line.rstrip(), flush=True)
-        tail.append(line)
-        tail = tail[-20:]
-    proc.wait()
+    reader = threading.Thread(target=_reader, daemon=True)
+    reader.start()
+    try:
+        proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        print(f"fetch: garmindb timed out after {timeout_s}s, killing process group", flush=True)
+        _sync_log("failed", f"garmindb download timed out after {int(timeout_s / 60)} min")
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)   # kill the whole session
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        proc.wait(timeout=10)
+    reader.join(timeout=10)
+    if timed_out:
+        detail = "".join(tail)[-2000:]
+        return {"ok": False, "error": "garmindb download timed out", "detail": detail}
     if proc.returncode != 0:
         detail = "".join(tail)[-2000:]
         print("fetch: garmindb failed:", detail, flush=True)

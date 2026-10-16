@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import config
+import sports as sports_registry
 
 DB_PATH = config.ACTIVITIES_DB
 OUT_PATH = Path(__file__).parent.parent / "climbs.json"
@@ -24,15 +25,23 @@ MERGE_DIP_M = 30            # max altitude lost in the gap for merging to apply
 
 
 def grade_category(score: float) -> str:
-    if score >= 80000:
+    """FIETS difficulty (gain^2 / length) mapped to Tour-style categories.
+
+    Unlike the old length x avg_grade score, FIETS ranks steep short
+    climbs above long gentle ones: the Planche-des-Belles-Filles
+    (6.7 km, 598 m) scores 53 vs the gentler, longer Cre't de Chatillon
+    (12.1 km, 740 m) at 45. Reference points: Alpe d'Huez ~87,
+    Col du Tourmalet ~102.
+    """
+    if score >= 100:
         return "HC"
-    if score >= 64000:
+    if score >= 70:
         return "Cat 1"
-    if score >= 32000:
+    if score >= 45:
         return "Cat 2"
-    if score >= 16000:
+    if score >= 25:
         return "Cat 3"
-    if score >= 8000:
+    if score >= 10:
         return "Cat 4"
     return "Uncategorized"
 
@@ -121,7 +130,7 @@ def _build_climb(points, smoothed, start_idx, end_idx, max_grade):
     elev_gain = smoothed[end_idx] - smoothed[start_idx]
     length = points[end_idx]["d"] - points[start_idx]["d"]
     avg_grade = (elev_gain / length * 100) if length > 0 else 0
-    score = length * avg_grade
+    score = (elev_gain * elev_gain / length) if length > 0 else 0
     start_pt = points[start_idx]
     end_pt = points[end_idx]
     metrics = profile_metrics(points, start_pt["d"], end_pt["d"]) or {}
@@ -318,7 +327,7 @@ def _recompute_envelope(climb, points):
     length = pts[end_idx]["d"] - pts[start_idx]["d"]
     gain = smoothed[end_idx] - smoothed[start_idx]
     avg = (gain / length * 100) if length > 0 else 0
-    score = length * avg
+    score = (gain * gain / length) if length > 0 else 0
     metrics = profile_metrics(pts, start_m, end_m) or {}
     return {
         **climb,
@@ -445,16 +454,20 @@ def main(full=False):
     except Exception:
         ignored = set()
 
+    enabled = sports_registry.enabled_sports({"sports": config.SPORTS})
+    db_sports = sports_registry.db_names(enabled)
+    placeholders = ",".join("?" for _ in db_sports)
     activities = [
         act for act in cur.execute(
-            """
+            f"""
             SELECT activity_id, name, start_time, distance, ascent, descent,
                    moving_time, elapsed_time, avg_speed, max_speed, avg_hr, max_hr,
-                   start_lat, start_long
+                   start_lat, start_long, sport, sub_sport
             FROM activities
-            WHERE sport = 'cycling'
+            WHERE sport IN ({placeholders})
             ORDER BY start_time DESC
-            """
+            """,
+            tuple(db_sports),
         ).fetchall()
         if str(act["activity_id"]) not in ignored
     ]
@@ -508,12 +521,20 @@ def main(full=False):
         lats = [r["position_lat"] for r in records]
         lons = [r["position_long"] for r in records]
 
-        climbs = detect_climbs(distance_m, altitude, lats, lons)
+        # Climb detection is cycling-only (categories, VAM, W/kg are bike
+        # metrics); other sports are listed but stay climb-free.
+        sport = sports_registry.canon(act["sport"])
+        if sports_registry.has_climbs(sport):
+            climbs = detect_climbs(distance_m, altitude, lats, lons)
+        else:
+            climbs = []
         n_analyzed += 1
         result["climb_count"] += len(climbs)
         result["activities"].append({
             "activity_id": activity_id,
             "name": act["name"],
+            "sport": sport,
+            "sub_sport": act["sub_sport"],
             "start_time": act["start_time"],
             "distance_km": round(act["distance"], 2) if act["distance"] else None,
             "ascent_m": act["ascent"],

@@ -7,7 +7,7 @@
         "code-review-graph",
         "serve",
         "--repo",
-        "/Users/matthieu.joulot/llm/bike/climb-analyzer"
+        "/Users/matthieu.joulot/llm/bike/open-sports-analysis"
       ]
     }
   }

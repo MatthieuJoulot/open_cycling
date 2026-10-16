@@ -1,14 +1,19 @@
 import { fetchClimbs } from '../utils/api.js';
-import { fmtDate, fmtTime, fmtDuration, fmtDistance, fmtElevation, fmtSpeed, fmtHr } from '../utils/format.js';
+import { fmtDate, fmtTime, fmtDuration, fmtDistance, fmtElevation, fmtSpeedOrPace, fmtHr } from '../utils/format.js';
+import { sportMeta, hasClimbs, SPORTS } from '../utils/sports.js';
 
 let allActivities = [];
+let sportFilter = 'all';
 
-export async function renderHome() {
+export async function renderHome(scope) {
+  // Optional scope from the sidebar (#feed/<sport>): null/undefined keeps
+  // the current filter, '' = all, or a sport name.
+  if (scope !== undefined) sportFilter = scope || 'all';
   const app = document.getElementById('app');
   app.innerHTML = `
     <div id="home-view">
       <div class="d-flex justify-content-between align-items-center mb-3">
-        <h4 class="mb-0">Feed</h4>
+        <h4 class="mb-0">Activity feed</h4>
       </div>
       <div class="card mb-3">
         <div class="card-body">
@@ -34,11 +39,20 @@ export async function renderHome() {
                 <option value="climbs-desc">Most climbs</option>
               </select>
             </div>
+            <div class="col-6 col-md-2">
+              <label class="form-label small text-muted">Min km</label>
+              <input type="number" min="0" step="1" id="dist-min" class="form-control form-control-sm" placeholder="—">
+            </div>
+            <div class="col-6 col-md-2">
+              <label class="form-label small text-muted">Max km</label>
+              <input type="number" min="0" step="1" id="dist-max" class="form-control form-control-sm" placeholder="—">
+            </div>
           </div>
           <div class="form-check form-switch mt-2">
             <input class="form-check-input" type="checkbox" id="has-climbs-only">
             <label class="form-check-label small" for="has-climbs-only">Only rides with climbs</label>
           </div>
+          <div class="mt-2 d-flex gap-2 flex-wrap" id="sport-chips"></div>
         </div>
       </div>
       <div id="activity-feed"></div>
@@ -55,11 +69,32 @@ export async function renderHome() {
 
   updateList();
 
+  // Sport filter chips: All + one per sport present in the data.
+  const sportsPresent = [...new Set(allActivities.map(a => a.sport || 'cycling'))];
+  const chipsEl = document.getElementById('sport-chips');
+  chipsEl.innerHTML = ['all', ...sportsPresent].map(s => {
+    const meta = s === 'all' ? { icon: '🌐', label: 'All' } : sportMeta(s);
+    const active = sportFilter === s;
+    return `<button class="btn btn-sm ${active ? 'btn-primary' : 'btn-outline-secondary'} sport-chip" data-sport="${s}">${meta.icon} ${meta.label}</button>`;
+  }).join('');
+  chipsEl.querySelectorAll('.sport-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      sportFilter = chip.dataset.sport;
+      chipsEl.querySelectorAll('.sport-chip').forEach(c => {
+        const on = c.dataset.sport === sportFilter;
+        c.className = `btn btn-sm ${on ? 'btn-primary' : 'btn-outline-secondary'} sport-chip`;
+      });
+      updateList();
+    });
+  });
+
   document.getElementById('search').addEventListener('input', () => updateList());
   document.getElementById('date-from').addEventListener('change', () => updateList());
   document.getElementById('date-to').addEventListener('change', () => updateList());
   document.getElementById('sort').addEventListener('change', () => updateList());
   document.getElementById('has-climbs-only').addEventListener('change', () => updateList());
+  document.getElementById('dist-min').addEventListener('input', () => updateList());
+  document.getElementById('dist-max').addEventListener('input', () => updateList());
 }
 
 function renderSetupCard() {
@@ -70,7 +105,7 @@ function renderSetupCard() {
   card.style.maxWidth = '480px';
   card.innerHTML = `
     <div class="card-body p-4">
-      <h5 class="card-title mb-2">No rides yet</h5>
+      <h5 class="card-title mb-2">No activities yet</h5>
       <p class="card-text text-muted">
         Point the app at your GarminDB data, or sync new activities if it is already configured.
       </p>
@@ -86,11 +121,17 @@ function updateList() {
   const dateTo = document.getElementById('date-to').value;
   const sort = document.getElementById('sort').value;
   const climbsOnly = document.getElementById('has-climbs-only').checked;
+  const distMin = parseFloat(document.getElementById('dist-min').value);
+  const distMax = parseFloat(document.getElementById('dist-max').value);
 
   let filtered = allActivities.filter(a => {
     const text = `${a.name || ''} ${a.start_time || ''}`.toLowerCase();
     if (term && !text.includes(term)) return false;
+    if (sportFilter !== 'all' && (a.sport || 'cycling') !== sportFilter) return false;
     if (climbsOnly && (a.climb_count || 0) === 0) return false;
+    const km = a.distance_km || 0;
+    if (Number.isFinite(distMin) && km < distMin) return false;
+    if (Number.isFinite(distMax) && km > distMax) return false;
     if (dateFrom || dateTo) {
       const d = a.start_time ? new Date(a.start_time) : null;
       if (!d) return false;
@@ -118,7 +159,7 @@ function renderFeed(activities) {
   feed.innerHTML = '';
 
   if (activities.length === 0) {
-    feed.innerHTML = '<div class="alert alert-light">No rides match.</div>';
+    feed.innerHTML = '<div class="alert alert-light">No activities match.</div>';
     return;
   }
 
@@ -127,6 +168,8 @@ function renderFeed(activities) {
     card.className = 'card mb-3 activity-card';
     const date = fmtDate(act.start_time);
     const time = fmtTime(act.start_time);
+    const meta = sportMeta(act.sport || 'cycling');
+    const paceSport = act.sport || 'cycling';
     const j = act.journal;
     const photoHtml = j && j.first_photo ? `
       <div class="col-md-3 position-relative">
@@ -137,7 +180,7 @@ function renderFeed(activities) {
       </div>` : '';
     card.innerHTML = `
       <div class="card-header d-flex justify-content-between align-items-center">
-        <a href="#activity/${act.activity_id}" class="text-decoration-none fw-semibold stretched-link-target">${act.name || 'Ride'}</a>
+        <a href="#activity/${act.activity_id}" class="text-decoration-none fw-semibold stretched-link-target">${meta.icon} ${act.name || meta.label}</a>
         <small class="text-muted">${date} · ${time}${j && j.has_note ? ' · 📝' : ''}</small>
       </div>
       <div class="card-body">
@@ -151,10 +194,10 @@ function renderFeed(activities) {
               <div class="col-4"><div class="stat-value">${fmtDuration(act.moving_time_s)}</div><div class="stat-label">Moving time</div></div>
               <div class="col-4"><div class="stat-value">${fmtElevation(act.ascent_m)}</div><div class="stat-label">Ascent</div></div>
               <div class="col-4"><div class="stat-value">${fmtHr(act.avg_hr)}</div><div class="stat-label">Avg HR</div></div>
-              <div class="col-4"><div class="stat-value">${fmtSpeed(act.avg_speed)}</div><div class="stat-label">Avg speed</div></div>
-              <div class="col-4"><div class="stat-value">${act.climb_count || 0}</div><div class="stat-label">Climbs</div></div>
+              <div class="col-4"><div class="stat-value">${fmtSpeedOrPace(paceSport, act.avg_speed)}</div><div class="stat-label">${hasClimbs(paceSport) ? 'Avg speed' : 'Avg pace'}</div></div>
+              ${hasClimbs(paceSport) ? `<div class="col-4"><div class="stat-value">${act.climb_count || 0}</div><div class="stat-label">Climbs</div></div>` : ''}
             </div>
-            <a href="#activity/${act.activity_id}" class="btn btn-sm btn-primary">Open ride</a>
+            <a href="#activity/${act.activity_id}" class="btn btn-sm btn-primary">Open ${hasClimbs(paceSport) ? 'ride' : 'activity'}</a>
             <button class="btn btn-sm btn-outline-secondary ms-2 download-btn" data-id="${act.activity_id}">Download FIT</button>
           </div>
           ${photoHtml}

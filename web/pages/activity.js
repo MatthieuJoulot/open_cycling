@@ -4,7 +4,8 @@ import { openSegmentAnalysis } from '../components/segmentAnalysis.js';
 import { openSegmentPicker } from '../components/segmentPicker.js';
 import { attachFullscreen } from '../utils/fullscreen.js';
 import { loadRiderWeightKg, estimateClimbWkg } from '../utils/estPower.js';
-import { fmtDate, fmtTime, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtHr, climbKey } from '../utils/format.js';
+import { fmtDate, fmtTime, fmtDuration, fmtDistance, fmtElevation, fmtGrade, fmtSpeed, fmtSpeedOrPace, fmtHr, climbKey } from '../utils/format.js';
+import { sportMeta, hasClimbs as sportHasClimbs, usesPace } from '../utils/sports.js';
 
 let elevationChart = null;
 let graphsChart = null;
@@ -27,7 +28,7 @@ export async function renderActivity(activityId) {
         </button>
         <div class="collapse show" id="section-journal">
           <div class="card-body">
-            <textarea id="journal-note" class="form-control" rows="3" placeholder="How was this ride?"></textarea>
+            <textarea id="journal-note" class="form-control" rows="3" placeholder="How was this activity?"></textarea>
             <button id="journal-save-btn" class="btn btn-sm btn-outline-primary mt-2">Save note</button>
             <span id="journal-saved-msg" class="small text-success ms-2 d-none">Saved ✓</span>
             <div id="journal-photos" class="row g-2 mt-2"></div>
@@ -111,15 +112,25 @@ export async function renderActivity(activityId) {
   const details = await fetchActivityDetails(activityId);
   const records = await fetchActivityRecords(activityId, 'distance,altitude,hr,speed,timestamp,position_lat,position_long,cadence,power,temperature', 3000);
   const riderKg = await loadRiderWeightKg();
+  const sport = details.activity?.sport || 'cycling';
 
-  renderHeader(details, activityId);
+  renderHeader(details, activityId, sport);
   setupDeleteActivity(activityId, details.activity);
+  // Laps + graphs read speed as pace for foot sports.
+  const isPace = usesPace(sport);
+  const lapsHead = document.querySelector('#section-laps thead th:nth-child(4)');
+  if (lapsHead) lapsHead.textContent = isPace ? 'Avg pace' : 'Avg speed';
+  const climbsCard = document.querySelector('#section-climbs')?.closest('.card');
+  if (climbsCard && !sportHasClimbs(sport)) {
+    // Climb detection is cycling-only; hide the section for other sports.
+    climbsCard.classList.add('d-none');
+  }
   renderClimbsTable(activityId, details.climbs || [], records, riderKg);
   setupJournal(activityId);
-  renderLapsTable(details.laps || []);
+  renderLapsTable(details.laps || [], isPace);
   renderMap(records, details.climbs || []);
   renderElevationChart(records, details.climbs || []);
-  renderGraphsChartDeferred(records, details.sensors || {});
+  renderGraphsChartDeferred(records, details.sensors || {}, sport);
   attachFullscreen(document.getElementById('section-map')?.closest('.card'), document.getElementById('map'), {
     onResize: () => { if (map) { map.invalidateSize(); } }
   });
@@ -129,8 +140,10 @@ export async function renderActivity(activityId) {
   setupIdentifySegments(activityId);
 }
 
-function renderHeader(details, activityId) {
+function renderHeader(details, activityId, sport = 'cycling') {
   const act = details.activity;
+  const meta = sportMeta(sport);
+  const speedLabel = meta.pace ? 'pace' : 'speed';
   const header = document.getElementById('activity-header');
   const deviceBadges = (details.devices || []).map(d => {
     const label = [d.manufacturer, d.product && d.product !== 'invalid' ? d.product : null, d.type]
@@ -141,12 +154,12 @@ function renderHeader(details, activityId) {
   header.innerHTML = `
     <div class="d-flex justify-content-between align-items-start">
       <div>
-        <h3>${act.name || 'Ride'}</h3>
+        <h3>${meta.icon} ${act.name || meta.label}</h3>
         <p class="text-muted mb-2">${fmtDate(act.start_time)} · ${fmtTime(act.start_time)}</p>
         ${deviceBadges ? `<div class="mb-3">${deviceBadges}</div>` : ''}
       </div>
       <div class="d-flex gap-2">
-        <a href="#flyover/${activityId}" class="btn btn-sm btn-outline-primary" id="flyover-btn" title="3D flyover of this ride">▶ Flyover</a>
+        <a href="#flyover/${activityId}" class="btn btn-sm btn-outline-primary" id="flyover-btn" title="3D flyover of this activity">▶ Flyover</a>
         <button id="delete-activity-btn" class="btn btn-sm btn-outline-danger" title="Delete this activity locally">Delete</button>
       </div>
     </div>
@@ -154,11 +167,11 @@ function renderHeader(details, activityId) {
       <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtDistance(act.distance)}</div><div class="stat-label">Distance</div></div></div>
       <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtDuration(act.moving_time)}</div><div class="stat-label">Moving time</div></div></div>
       <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtElevation(act.ascent)}</div><div class="stat-label">Ascent</div></div></div>
-      <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtSpeed(act.avg_speed)}</div><div class="stat-label">Avg speed</div></div></div>
-      <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtSpeed(act.max_speed)}</div><div class="stat-label">Max speed</div></div></div>
+      <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtElevation(act.descent)}</div><div class="stat-label">Descent</div></div></div>
+      <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtSpeedOrPace(sport, act.avg_speed)}</div><div class="stat-label">Avg ${speedLabel}</div></div></div>
+      <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtSpeedOrPace(sport, act.max_speed)}</div><div class="stat-label">Max ${speedLabel}</div></div></div>
       <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtHr(details.avg_hr)}</div><div class="stat-label">Avg HR</div></div></div>
       <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtHr(details.max_hr)}</div><div class="stat-label">Max HR</div></div></div>
-      <div class="col-6 col-md-3"><div class="card text-center p-2"><div class="stat-value">${fmtElevation(act.descent)}</div><div class="stat-label">Descent</div></div></div>
     </div>
   `;
 }
@@ -168,7 +181,7 @@ function setupDeleteActivity(activityId, act) {
   if (!btn) return;
   btn.addEventListener('click', async () => {
     const label = act?.name || 'this activity';
-    const ok = confirm(`Delete "${label}" locally?\n\nRemoves it from the analyzer, GarminDB and downloaded files. The ride stays on Garmin Connect, but syncs will not re-import it.`);
+    const ok = confirm(`Delete "${label}" locally?\n\nRemoves it from the analyzer, GarminDB and downloaded files. The activity stays on Garmin Connect, but syncs will not re-import it.`);
     if (!ok) return;
     btn.disabled = true;
     btn.textContent = 'Deleting…';
@@ -702,7 +715,7 @@ async function renderClimbPrDeltas(activityId, climbs, records) {
   }
 }
 
-function renderLapsTable(laps) {
+function renderLapsTable(laps, isPace = false) {
   const tbody = document.getElementById('laps-body');
   const noLaps = document.getElementById('no-laps');
   tbody.innerHTML = '';
@@ -737,7 +750,7 @@ function renderLapsTable(laps) {
       <td>${lap.lap + 1}</td>
       <td>${fmtDistance(lap.distance)}</td>
       <td>${fmtDuration(lap.moving_time)}</td>
-      <td>${fmtSpeed(avgSpeed)}</td>
+      <td>${isPace ? fmtSpeedOrPace('running', avgSpeed) : fmtSpeed(avgSpeed)}</td>
       <td>${fmtElevation(lap.ascent)}</td>
       <td>${fmtHr(lap.avg_hr)}</td>
     `;
@@ -969,27 +982,56 @@ const GRAPH_MEASURES = {
   altitude: { label: 'Altitude', color: '#198754', field: 'altitude', axis: 'yAlt', axisTitle: 'Altitude (m)', has: s => s.has_altitude !== false },
   temperature: { label: 'Temperature', color: '#fd7e14', field: 'temperature', axis: 'yTemp', axisTitle: 'Temperature (°C)', has: s => s.has_temperature },
   power: { label: 'Power', color: '#6f42c1', field: 'power', axis: 'yPower', axisTitle: 'Power (W)', has: s => s.has_power },
+  cadence: { label: 'Cadence', color: '#20c997', field: 'cadence', axis: 'yCad', axisTitle: 'Cadence (rpm)', has: s => s.has_cadence },
 };
 
-function renderGraphsChartDeferred(records, sensors) {
+// Seconds per km -> m:ss pace label.
+function paceTick(v) {
+  if (v == null || !isFinite(v) || v <= 0) return '';
+  const m = Math.floor(v / 60);
+  const s = Math.round(v % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function renderGraphsChartDeferred(records, sensors, sport = 'cycling') {
   graphsChartRendered = false;
   const card = document.getElementById('graphs-card');
   if (!card) return;
   card.classList.remove('d-none');
+  // Foot sports: cadence records one-foot steps (GarminDB convention),
+  // Garmin Connect shows steps/min = 2 x; speed reads as pace (min/km).
+  const measures = { ...GRAPH_MEASURES };
+  if (usesPace(sport)) {
+    measures.cadence = {
+      ...measures.cadence,
+      label: 'Step rate',
+      axisTitle: 'Step rate (spm)',
+      transform: v => (v != null ? v * 2 : null),
+    };
+    measures.speed = {
+      ...measures.speed,
+      label: 'Pace',
+      axisTitle: 'Pace (min/km)',
+      // Speed (km/h) -> pace (s/km); inverted axis so up = faster.
+      transform: v => (v && v > 0) ? 3600 / v : null,
+      invert: true,
+      tickFormat: paceTick,
+    };
+  }
   const collapse = document.getElementById('section-graphs');
   collapse.addEventListener('shown.bs.collapse', () => {
-    if (!graphsChartRendered) renderGraphsChart(records, sensors);
+    if (!graphsChartRendered) renderGraphsChart(records, sensors, measures);
   }, { once: true });
 }
 
-function renderGraphsChart(records, sensors) {
+function renderGraphsChart(records, sensors, measures = GRAPH_MEASURES) {
   if (graphsChart) graphsChart.destroy();
   const ctx = document.getElementById('graphs-chart').getContext('2d');
   const container = document.getElementById('graphs-measures');
   container.innerHTML = '';
 
   // Which measures this activity actually has data for.
-  const available = Object.entries(GRAPH_MEASURES).filter(([, m]) => {
+  const available = Object.entries(measures).filter(([, m]) => {
     try { return m.has(sensors); } catch { return false; }
   });
   // Defaults only on first render; after that the user's ticks stick.
@@ -1009,7 +1051,7 @@ function renderGraphsChart(records, sensors) {
     container.appendChild(wrap);
     wrap.querySelector('input').addEventListener('change', e => {
       if (e.target.checked) selectedMeasures.add(id); else selectedMeasures.delete(id);
-      renderGraphsChart(records, sensors);
+      renderGraphsChart(records, sensors, measures);
     });
   }
 
@@ -1020,7 +1062,7 @@ function renderGraphsChart(records, sensors) {
   let axisCount = 0;
   for (const [id, m] of available) {
     if (!selectedMeasures.has(id)) continue;
-    const data = records.map(p => p[m.field]);
+    const data = records.map(p => (m.transform ? m.transform(p[m.field]) : p[m.field]));
     datasets.push({
       label: m.axisTitle,
       data,
@@ -1038,7 +1080,10 @@ function renderGraphsChart(records, sensors) {
     scales[m.axis] = {
       position: axisCount % 2 === 0 ? 'left' : 'right',
       title: { display: true, text: m.axisTitle, color: m.color },
-      ticks: { color: m.color },
+      ticks: m.tickFormat
+        ? { color: m.color, callback: m.tickFormat }
+        : { color: m.color },
+      reverse: !!m.invert,
       grid: { drawOnChartArea: axisCount === 0 },
     };
     axisCount++;
@@ -1053,7 +1098,18 @@ function renderGraphsChart(records, sensors) {
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
-        tooltip: { callbacks: { title: items => `km ${items[0].label}` } }
+        tooltip: {
+          callbacks: {
+            title: items => `km ${items[0].label}`,
+            label: item => {
+              const ds = graphsChart.getDatasetMeta(item.datasetIndex);
+              const m = Object.values(measures).find(x => x.axis === ds.yAxisID);
+              const v = item.parsed.y;
+              if (m && m.tickFormat) return `${m.label}: ${m.tickFormat(v)} /km`;
+              return `${m ? m.label : ''}: ${v != null ? v.toFixed(1) : '-'}`;
+            },
+          }
+        }
       },
       scales
     }

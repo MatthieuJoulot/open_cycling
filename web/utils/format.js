@@ -1,7 +1,19 @@
+import { usesPace } from './sports.js';
+
+// Intl date formatting is slow (~ms per call cold); memoize the formatter
+// and the results — big lists (hundreds of attempts) format dates in a
+// tight loop and this showed up as the main cost on the climb page.
+const _dateFmt = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+const _dateCache = new Map();
+
 export function fmtDate(isoString) {
   if (!isoString) return '';
-  const d = new Date(isoString);
-  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  let s = _dateCache.get(isoString);
+  if (s === undefined) {
+    s = _dateFmt.format(new Date(isoString));
+    _dateCache.set(isoString, s);
+  }
+  return s;
 }
 
 // Python's round() uses banker's rounding (half to even); the server builds
@@ -62,6 +74,19 @@ export function fmtGrade(p) {
 export function fmtSpeed(kmh) {
   if (kmh == null || isNaN(kmh)) return '-';
   return `${kmh.toFixed(1)} km/h`;
+}
+
+export function fmtPace(kmh) {
+  // Speed in km/h → pace in min/km, the convention for foot sports.
+  if (kmh == null || isNaN(kmh) || kmh <= 0) return '-';
+  const secPerKm = 3600 / kmh;
+  const m = Math.floor(secPerKm / 60);
+  const s = Math.round(secPerKm % 60);
+  return `${m}:${String(s).padStart(2, '0')} min/km`;
+}
+
+export function fmtSpeedOrPace(sport, kmh) {
+  return usesPace(sport) ? fmtPace(kmh) : fmtSpeed(kmh);
 }
 
 export function fmtHr(bpm) {

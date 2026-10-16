@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Climb Analyzer</title>
+  <title>Open Sports Analysis</title>
   <script>
     // Apply stored theme before first paint to avoid a flash of light mode.
     (function () {
@@ -33,6 +33,8 @@
     #climbs-head-row .sort-arrow { font-size: .8em; }
     .activity-section .card-header .chevron::before { content: '▼'; }
     .activity-section .card-header.collapsed .chevron::before { content: '▶'; }
+    #sidebar .list-group .chevron { transition: transform .2s; }
+    #sidebar a[aria-expanded="true"] .chevron { transform: rotate(90deg); }
     [data-bs-theme="dark"] .mini-map { filter: brightness(0.8) saturate(0.8); }
   </style>
 </head>

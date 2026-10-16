@@ -9,7 +9,7 @@ CACHE_DIR = ROOT / "cache"
 REGIONS_CACHE = CACHE_DIR / "regions.json"
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
-USER_AGENT = "ClimbAnalyzer/1.0 (local; contact via github)"
+USER_AGENT = "OpenSportsAnalysis/1.0 (local; contact via github)"
 
 
 def _load_json(path, default=None):

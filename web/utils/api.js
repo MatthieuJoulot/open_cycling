@@ -6,10 +6,23 @@ export async function fetchClimbs() {
   return res.json();
 }
 
-export async function fetchProfile() {
-  const res = await fetch(`${BASE}/api/profile`);
-  if (!res.ok) throw new Error('Failed to load profile');
-  return res.json();
+// Profile payload is identical for every consumer (sidebar, statistics
+// athlete card); fetch it once per page load.
+let profilePromise = null;
+
+export function fetchProfile() {
+  if (!profilePromise) {
+    profilePromise = fetch(`${BASE}/api/profile`)
+      .then(res => {
+        if (!res.ok) throw new Error('Failed to load profile');
+        return res.json();
+      })
+      .catch(err => {
+        profilePromise = null;   // a later caller can retry
+        throw err;
+      });
+  }
+  return profilePromise;
 }
 
 export async function fetchActivityDetails(id) {
@@ -60,14 +73,19 @@ export async function fetchRegionsStatus() {
   return res.json();
 }
 
-export async function fetchStats() {
-  const res = await fetch(`${BASE}/api/stats`);
+export async function fetchStats(sport = null, from = null, to = null) {
+  const params = [];
+  if (sport) params.push(`sport=${encodeURIComponent(sport)}`);
+  if (from) params.push(`from=${encodeURIComponent(from)}`);
+  if (to) params.push(`to=${encodeURIComponent(to)}`);
+  const url = `${BASE}/api/stats${params.length ? '?' + params.join('&') : ''}`;
+  const res = await fetch(url);
   if (!res.ok) throw new Error('Failed to load statistics');
   return res.json();
 }
 
-export async function fetchHeatmap() {
-  const res = await fetch(`${BASE}/api/heatmap`);
+export async function fetchHeatmap(sport = 'cycling') {
+  const res = await fetch(`${BASE}/api/heatmap?sport=${encodeURIComponent(sport)}`);
   if (!res.ok) throw new Error('Failed to load heatmap');
   return res.json();
 }

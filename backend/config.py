@@ -23,17 +23,21 @@ DEFAULTS = {
     "media_dir": "",
     "port": 8080,
     "sync_latest": True,
+    "sports": ["cycling", "running", "hiking"],
 }
 
+# Preferred env var prefix is OPEN_SPORTS_ANALYSIS_*; the legacy
+# CLIMB_ANALYZER_* names still work (checked second) so existing setups
+# keep running after the project rename.
 ENV_VARS = {
-    "health_data_dir": "CLIMB_ANALYZER_HEALTH_DATA_DIR",
-    "activities_db": "CLIMB_ANALYZER_ACTIVITIES_DB",
-    "garmin_db": "CLIMB_ANALYZER_GARMIN_DB",
-    "fit_dir": "CLIMB_ANALYZER_FIT_DIR",
-    "personal_info_json": "CLIMB_ANALYZER_PERSONAL_INFO",
-    "garmindb_cli": "CLIMB_ANALYZER_GARMINDB_CLI",
-    "media_dir": "CLIMB_ANALYZER_MEDIA_DIR",
-    "port": "CLIMB_ANALYZER_PORT",
+    "health_data_dir": ["OPEN_SPORTS_ANALYSIS_HEALTH_DATA_DIR", "CLIMB_ANALYZER_HEALTH_DATA_DIR"],
+    "activities_db": ["OPEN_SPORTS_ANALYSIS_ACTIVITIES_DB", "CLIMB_ANALYZER_ACTIVITIES_DB"],
+    "garmin_db": ["OPEN_SPORTS_ANALYSIS_GARMIN_DB", "CLIMB_ANALYZER_GARMIN_DB"],
+    "fit_dir": ["OPEN_SPORTS_ANALYSIS_FIT_DIR", "CLIMB_ANALYZER_FIT_DIR"],
+    "personal_info_json": ["OPEN_SPORTS_ANALYSIS_PERSONAL_INFO", "CLIMB_ANALYZER_PERSONAL_INFO"],
+    "garmindb_cli": ["OPEN_SPORTS_ANALYSIS_GARMINDB_CLI", "CLIMB_ANALYZER_GARMINDB_CLI"],
+    "media_dir": ["OPEN_SPORTS_ANALYSIS_MEDIA_DIR", "CLIMB_ANALYZER_MEDIA_DIR"],
+    "port": ["OPEN_SPORTS_ANALYSIS_PORT", "CLIMB_ANALYZER_PORT"],
 }
 
 
@@ -48,9 +52,11 @@ def _load():
             values.update(json.loads(CONFIG_JSON.read_text(encoding="utf-8")))
         except Exception as exc:
             print(f"Warning: could not parse {CONFIG_JSON}: {exc}")
-    for key, env in ENV_VARS.items():
-        if os.environ.get(env):
-            values[key] = os.environ[env]
+    for key, envs in ENV_VARS.items():
+        for env in (envs if isinstance(envs, list) else [envs]):
+            if os.environ.get(env):
+                values[key] = os.environ[env]
+                break
     return values
 
 
@@ -90,6 +96,7 @@ PERSONAL_INFO_JSON = _paths["personal_info_json"]
 GARMINDB_CLI = _resolve_garmindb_cli(_cfg["garmindb_cli"])
 PORT = int(_cfg["port"])
 SYNC_LATEST = bool(_cfg["sync_latest"])
+SPORTS = [s for s in (list(_cfg["sports"]) if _cfg["sports"] else []) if isinstance(s, str)]
 
 
 def current_config():
@@ -109,7 +116,7 @@ def save_config(values):
             existing = {}
     existing.update(updates)
     CONFIG_JSON.write_text(json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    global _cfg, _paths, ACTIVITIES_DB, GARMIN_DB, FIT_DIR, PERSONAL_INFO_JSON, GARMINDB_CLI, SYNC_LATEST
+    global _cfg, _paths, ACTIVITIES_DB, GARMIN_DB, FIT_DIR, PERSONAL_INFO_JSON, GARMINDB_CLI, SYNC_LATEST, SPORTS
     _cfg = _load()
     _paths = _resolve(_cfg)
     ACTIVITIES_DB = _paths["activities_db"]
@@ -118,3 +125,4 @@ def save_config(values):
     PERSONAL_INFO_JSON = _paths["personal_info_json"]
     GARMINDB_CLI = _resolve_garmindb_cli(_cfg["garmindb_cli"])
     SYNC_LATEST = bool(_cfg["sync_latest"])
+    SPORTS = [s for s in (list(_cfg["sports"]) if _cfg["sports"] else []) if isinstance(s, str)]

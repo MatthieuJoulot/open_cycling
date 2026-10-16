@@ -106,7 +106,7 @@ export async function openSegmentPicker({ activityId, climb, onReplaced }) {
         </div>` : ''}
       <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
         <input type="search" id="segment-picker-search" class="form-control form-control-sm" style="width: 180px;"
-               placeholder="Search name, ride…" value="${escapeHtml(search)}">
+               placeholder="Search name, activity…" value="${escapeHtml(search)}">
         <select id="segment-picker-sort" class="form-select form-select-sm w-auto">
           <option value="similarity" ${sort === 'similarity' ? 'selected' : ''}>Sort: similarity</option>
           <option value="name" ${sort === 'name' ? 'selected' : ''}>Sort: name</option>

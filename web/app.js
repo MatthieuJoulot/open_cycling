@@ -7,7 +7,6 @@ import { renderClimb } from './pages/climb.js';
 import { renderWiki } from './pages/wiki.js';
 import { renderParameters } from './pages/parameters.js';
 import { renderStatistics } from './pages/statistics.js';
-import { renderTraining } from './pages/training.js';
 import { renderExplore, renderClimbDbDetail } from './pages/explore.js';
 import { renderFlyover } from './pages/flyover.js';
 import { applyTheme } from './utils/theme.js';
@@ -16,7 +15,22 @@ import { rememberListPage } from './components/nav.js';
 applyTheme(document.documentElement.getAttribute('data-bs-theme') || 'light');
 
 function route() {
-  const hash = location.hash.replace(/^#/, '') || 'feed';
+  let hash = location.hash.replace(/^#/, '') || 'feed';
+  // Scoped sections: #feed/<sport>, #statistics/<sport>. Old #training/<sport>
+  // bookmarks rewrite to the merged Statistics page.
+  // The scope param goes to the page (sport filter / select).
+  const scoped = hash.match(/^(feed|statistics|training)\/([a-z]*)$/);
+  let scope;
+  if (scoped) {
+    if (scoped[1] === 'training') {
+      history.replaceState(null, '', '#statistics' + (scoped[2] ? '/' + scoped[2] : '/'));
+    }
+    hash = scoped[1] === 'training' ? 'statistics' : scoped[1];
+    scope = scoped[2] || null;
+  } else if (hash === 'training') {
+    history.replaceState(null, '', '#statistics/');
+    hash = 'statistics';
+  }
   rememberListPage(hash);
   const loading = document.getElementById('loading');
   loading.classList.remove('d-none');
@@ -27,11 +41,25 @@ function route() {
   const feedHashes = ['feed', 'home', ''];
   const sectionHashes = ['statistics'];
 
+  // Sidebar section id: which nav entry is highlighted / which group is
+  // expanded. Scoped pages highlight inside their sport group.
+  let sidebarSection = hash;
+  if (scoped) {
+    if (scoped[1] === 'feed') {
+      sidebarSection = scope ? `${scope}-feed` : 'feed';
+    } else {
+      // #statistics/<sport> (and old #training/<sport> bookmarks): highlight
+      // inside the sport group, or the Overall group when no sport is given.
+      sidebarSection = scope ? `${scope}-statistics` : `overall-statistics`;
+    }
+  }
+  if (['feed', 'home', ''].includes(hash)) sidebarSection = 'feed';
+
   if (feedHashes.includes(hash)) {
     renderNav(false);
     showSidebar();
-    renderSidebar('feed');
-    renderHome().finally(() => loading.classList.add('d-none'));
+    renderSidebar(sidebarSection);
+    renderHome(scope).finally(() => loading.classList.add('d-none'));
     return;
   }
 
@@ -43,11 +71,12 @@ function route() {
     return;
   }
 
-  if (hash === 'wiki') {
+  const wm = hash.match(/^wiki(?:\/([a-z]*))?$/);
+  if (wm) {
     renderNav(false);
     showSidebar();
-    renderSidebar('wiki');
-    renderWiki().finally(() => loading.classList.add('d-none'));
+    renderSidebar(`wiki-${wm[1] || ''}`);
+    renderWiki(wm[1] || null).finally(() => loading.classList.add('d-none'));
     return;
   }
 
@@ -62,16 +91,8 @@ function route() {
   if (hash === 'statistics') {
     renderNav(false);
     showSidebar();
-    renderSidebar('statistics');
-    renderStatistics().finally(() => loading.classList.add('d-none'));
-    return;
-  }
-
-  if (hash === 'training') {
-    renderNav(false);
-    showSidebar();
-    renderSidebar('training');
-    renderTraining().finally(() => loading.classList.add('d-none'));
+    renderSidebar(sidebarSection);
+    renderStatistics(scope).finally(() => loading.classList.add('d-none'));
     return;
   }
 

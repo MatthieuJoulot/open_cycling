@@ -153,7 +153,9 @@ function renderSegmentDetails(members) {
   if (!mapContainer || members.length === 0) return Promise.resolve();
 
   const rep = members[members.length - 1];
-  return fetchActivityRecords(rep.activity_id, 'distance,altitude,position_lat,position_long', 3000)
+  // Full record fields: the per-bin analysis needs speed/HR/timestamp
+  // (and power/cadence when present) on top of distance/altitude.
+  return fetchActivityRecords(rep.activity_id, 'distance,altitude,position_lat,position_long,hr,speed,timestamp,cadence,power', 3000)
     .then(records => {
       currentSegment = records.filter(r =>
         r.distance >= rep.start_distance_m && r.distance <= rep.end_distance_m
@@ -162,18 +164,21 @@ function renderSegmentDetails(members) {
       renderSegmentMap(mapContainer, currentSegment);
       renderSegmentElevation(currentSegment, currentStartDistanceM);
       // Per-bin analysis inline, directly on the climb page. The current
-      // attempt is not highlighted here (the page is about the climb,
-      // not one ride): grey dots per attempt, avg/best toggles instead.
+      // (latest) attempt's bins show as blue dots so the chosen metric is
+      // visible right away; other attempts load as grey dots, with
+      // avg/best toggles across all attempts.
       renderSegmentAnalysis(document.getElementById('climb-segment-analysis'), {
         climb: {
           activity_id: rep.activity_id,
           start_distance_m: rep.start_distance_m,
           end_distance_m: rep.end_distance_m,
+          start_time: rep.start_time,
+          elapsed_time_s: rep.elapsed_time_s,
         },
         records,
         fetchMatches: fetchClimbMatches,
         fetchRecords: fetchActivityRecords,
-        showCurrent: false,
+        showCurrent: true,
       });
     })
     .catch(err => {
@@ -844,7 +849,10 @@ function renderPerformances(members) {
     return `${Math.round(secs)}s`;
   };
 
-  for (const m of members) {
+  // Newest first, like the activity feed.
+  const ordered = members.slice().reverse();
+
+  for (const m of ordered) {
     let deltaCell = '-';
     if (bestTime != null && m.elapsed_time_s != null) {
       const d = m.elapsed_time_s - bestTime;

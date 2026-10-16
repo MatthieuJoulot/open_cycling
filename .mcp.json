@@ -6,7 +6,7 @@
         "code-review-graph",
         "serve"
       ],
-      "cwd": "/Users/matthieu.joulot/llm/bike/climb-analyzer",
+      "cwd": "/Users/matthieu.joulot/llm/bike/open-sports-analysis",
       "type": "stdio"
     }
   }

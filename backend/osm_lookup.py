@@ -17,7 +17,7 @@ OVERPASS_URLS = [
     "https://overpass.kumi.systems/api/interpreter",
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ]
-USER_AGENT = "ClimbAnalyzer/1.0 (local; contact via github)"
+USER_AGENT = "OpenSportsAnalysis/1.0 (local; contact via github)"
 
 
 def _load_json(path, default=None):

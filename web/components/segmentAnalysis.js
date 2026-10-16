@@ -1,11 +1,13 @@
 import { loadRiderWeightKg as sharedLoadRiderWeightKg, estimateWkg } from '../utils/estPower.js';
 import { elevationDataset, elevationScale } from '../utils/elevChart.js';
+import { fmtDate } from '../utils/format.js';
 
 const BIN_SIZES = [200, 500, 1000];
 
 const METRICS = {
   avg_speed: { label: 'Avg speed', axis: 'Speed (km/h)', unit: ' km/h', decimals: 1, field: 'speed', higherIsBetter: true },
   avg_hr: { label: 'Avg HR', axis: 'HR (bpm)', unit: ' bpm', decimals: 0, field: 'hr', higherIsBetter: false },
+  eff: { label: 'Speed / HR', axis: 'Efficiency (km/h per bpm)', unit: ' km/h/bpm', decimals: 2, field: null, higherIsBetter: true },
   vam: { label: 'VAM', axis: 'VAM (m/h)', unit: ' m/h', decimals: 0, field: null, higherIsBetter: true },
   avg_power: { label: 'Avg power', axis: 'Power (W)', unit: ' W', decimals: 0, field: 'power', higherIsBetter: true },
   est_wkg: { label: 'Est. power/kg', axis: 'Est. power (W/kg)', unit: ' W/kg', decimals: 2, field: null, higherIsBetter: true },
@@ -97,6 +99,8 @@ function computeBins(records, startM, endM, binSizeM, riderKg) {
         vam,
         avg_speed: avgOf('speed'),
         avg_hr: avgOf('hr'),
+        eff: (avgOf('speed') != null && avgOf('hr') != null && avgOf('hr') > 0)
+          ? avgOf('speed') / avgOf('hr') : null,
         avg_power: avgOf('power'),
         avg_cadence: avgOf('cadence'),
         est_wkg: estWkg,
@@ -118,6 +122,7 @@ export async function renderSegmentAnalysis(container, { climb, records, fetchMa
   let metric = 'avg_speed';
   let showAvg = false;
   let showBest = false;
+  let showBestOverall = false;
   let chart = null;
 
   // Other attempts on this segment (same group), each with its records.
@@ -145,12 +150,9 @@ export async function renderSegmentAnalysis(container, { climb, records, fetchMa
   const getAttemptRecords = async (m) => {
     const k = m.activity_id;
     if (!(k in attemptsCache)) {
-      try {
-        attemptsCache[k] = await fetchRecords(m.activity_id,
-          'distance,altitude,hr,speed,timestamp,cadence,power', 3000);
-      } catch (err) {
-        attemptsCache[k] = [];
-      }
+      attemptsCache[k] = fetchRecords(m.activity_id,
+        'distance,altitude,hr,speed,timestamp', 1200)
+        .catch(err => []);
     }
     return attemptsCache[k];
   };
@@ -162,6 +164,7 @@ export async function renderSegmentAnalysis(container, { climb, records, fetchMa
         <select id="segment-analysis-metric" class="form-select form-select-sm">
           <option value="avg_speed">Avg speed</option>
           <option value="avg_hr">Avg HR</option>
+          <option value="eff">Speed / HR</option>
           <option value="vam">VAM</option>
           <option value="avg_power" ${hasPower ? '' : 'disabled'}>Avg power${hasPower ? '' : ' (no data)'}</option>
           <option value="est_wkg" ${riderKg ? '' : 'disabled'}>Est. power/kg${riderKg ? '' : ' (no weight)'}</option>
@@ -209,6 +212,9 @@ export async function renderSegmentAnalysis(container, { climb, records, fetchMa
     // current segment's bin grid so every dot sits at a bin centre.
     // Attempts may cover slightly different absolute ranges, so values
     // are matched to bins by absolute distance, not by attempt-local index.
+    // Record fetching is cached per activity, but a big group (100+
+    // attempts) makes the first render slow if done serially — fetch in
+    // parallel instead of awaiting inside the loop.
     const othersData = [];
     const perBin = {};   // for avg/best, populated always (cheap)
     const binCenterAbs = b => b.startDistKm + (b.endDistKm - b.startDistKm) / 2;
@@ -219,22 +225,46 @@ export async function renderSegmentAnalysis(container, { climb, records, fetchMa
     };
     bins.forEach(b => collect(b, null));
     const others = attempts || [];
-    for (const m of others) {
-      const mRecs = await getAttemptRecords(m);
-      if (!mRecs.length) continue;
+    const othersRecords = await Promise.all(others.map(m => getAttemptRecords(m)));
+    // Per-attempt binned metric values, kept for the "best overall" line:
+    // one whole attempt traced bin by bin. The current attempt is a
+    // candidate too — it can legitimately be the best overall.
+    const attemptBins = [];
+    if (showCurrent && currentData.length) {
+      attemptBins.push({
+        m: { activity_id: climb.activity_id, start_time: climb.start_time, elapsed_time_s: climb.elapsed_time_s },
+        vals: currentData.map(p => ({ x: p.x, y: p.y })),
+      });
+    }
+    others.forEach((m, i) => {
+      const mRecs = othersRecords[i];
+      if (!mRecs.length) return;
+      // Clamp to the attempt's OWN climb range first: attempts can start
+      // or finish partway along the current grid (different side, shorter
+      // variant), and records outside their range — typically the descent
+      // after the col — would otherwise leak into the bins as absurd
+      // "best" speeds.
+      const own = mRecs.filter(r => r.distance != null &&
+        r.distance >= m.start_distance_m && r.distance <= m.end_distance_m);
+      if (!own.length) return;
       // Bin on the current segment's absolute grid: values outside the
       // current segment's bins are dropped, partial overlaps land in the
       // bin they intersect.
-      const { bins: mBins } = computeBins(mRecs, startM, endM, binSizeM, riderKg);
+      const { bins: mBins } = computeBins(own, startM, endM, binSizeM, riderKg);
       const pts = [];
       mBins.forEach(mb => collect(mb, pts));
       othersData.push(...pts);
-    }
+      const vals = mBins
+        .filter(mb => mb[metric] != null)
+        .map(mb => ({ x: binCenterAbs(mb), y: mb[metric] }));
+      if (vals.length) attemptBins.push({ m, vals });
+    });
 
     // Per-bin average and best across ALL attempts (current included),
     // dots at the same bin centres when ticked.
     let avgData = null;
     let bestData = null;
+    let bestOverallLabel = null;
     const pick = fn => bins
       .map(b => {
         const vals = perBin[b.idx];
@@ -246,6 +276,27 @@ export async function renderSegmentAnalysis(container, { climb, records, fetchMa
       // Best = best value per bin, relative to the metric's direction
       // (fastest speed, lowest HR, etc).
       bestData = pick(vals => meta.higherIsBetter === false ? Math.min(...vals) : Math.max(...vals));
+    }
+
+    // Best overall: the single best attempt on the climb as a whole —
+    // fastest elapsed time (falling back to the metric value when a
+    // member carries no time) — traced through every bin it covers.
+    let bestOverallData = null;
+    if (showBestOverall && attemptBins.length) {
+      // Attempts without time go last when higher is better (they lose
+      // the time-based comparison); sort ascending, time wins.
+      const candidates = attemptBins.slice().sort((a, b) => {
+        const at = a.m.elapsed_time_s, bt = b.m.elapsed_time_s;
+        if (at != null && bt != null) return at - bt;
+        if (at != null) return -1;
+        if (bt != null) return 1;
+        // No attempt has time: rank by the metric's mean value instead.
+        const mean = v => v.vals.reduce((s, p) => s + p.y, 0) / v.vals.length;
+        return meta.higherIsBetter === false ? mean(a) - mean(b) : mean(b) - mean(a);
+      });
+      const winner = candidates[0];
+      bestOverallData = winner.vals;
+      bestOverallLabel = fmtDate(winner.m.start_time) || 'Best overall';
     }
 
     if (chart) chart.destroy();
@@ -261,7 +312,7 @@ export async function renderSegmentAnalysis(container, { climb, records, fetchMa
     }
     const metricSets = [
       showCurrent ? {
-        label: meta.label,
+        label: `Latest attempt — ${meta.label}`,
         data: currentData,
         type: 'scatter',
         showLine: false,
@@ -294,7 +345,7 @@ export async function renderSegmentAnalysis(container, { climb, records, fetchMa
         order: 3,
       } : null,
       bestData ? {
-        label: 'Best',
+        label: 'Best per bin',
         data: bestData,
         type: 'line',
         showLine: true,
@@ -306,12 +357,26 @@ export async function renderSegmentAnalysis(container, { climb, records, fetchMa
         tension: 0.2,
         order: 0,
       } : null,
+      bestOverallData ? {
+        label: `Best overall (${bestOverallLabel})`,
+        data: bestOverallData,
+        type: 'line',
+        showLine: true,
+        pointRadius: 4,
+        pointBackgroundColor: '#6f42c1',
+        pointBorderColor: '#6f42c1',
+        borderColor: 'rgba(111, 66, 193, 0.55)',
+        borderWidth: 2,
+        tension: 0.2,
+        // Drawn above the blue current-attempt dots.
+        order: 0.5,
+      } : null,
     ].filter(Boolean);
     datasets.push(...metricSets);
 
     // Metric axis range: cover ALL dots (current, other attempts, avg,
-    // best) so nothing is clipped out of the visible area.
-    const refVals = [...(avgData || []), ...(bestData || [])].map(v => v.y);
+    // best, best-overall) so nothing is clipped out of the visible area.
+    const refVals = [...(avgData || []), ...(bestData || []), ...(bestOverallData || [])].map(v => v.y);
     const dotVals = [
       ...(showCurrent ? currentData.map(v => v.y) : []),
       ...othersData.map(v => v.y),
@@ -362,6 +427,7 @@ export async function renderSegmentAnalysis(container, { climb, records, fetchMa
                   fmt('Duration', b.duration, ' s', 0),
                   metric === 'avg_speed' ? null : fmt('Avg speed', b.avg_speed, ' km/h', 1),
                   metric === 'avg_hr' ? null : fmt('Avg HR', b.avg_hr, ' bpm'),
+                  metric === 'eff' ? null : fmt('Speed / HR', b.eff, ' km/h/bpm', 2),
                   metric === 'vam' ? null : fmt('VAM', b.vam, ' m/h'),
                   hasPower && metric !== 'avg_power' ? fmt('Avg power', b.avg_power, ' W') : null,
                   b.est_wkg != null && metric !== 'est_wkg' ? fmt('Est. W/kg', b.est_wkg, ' W/kg', 2) : null,
@@ -412,17 +478,22 @@ export async function renderSegmentAnalysis(container, { climb, records, fetchMa
       div.innerHTML = `
         <div class="form-check mb-0">
           <input class="form-check-input" type="checkbox" id="segment-analysis-show-avg">
-          <label class="form-check-label small" for="segment-analysis-show-avg">Average performance <span class="text-danger">•—</span></label>
+          <label class="form-check-label small" for="segment-analysis-show-avg">Average per bin <span class="text-danger">•—</span></label>
         </div>
         <div class="form-check mb-0">
           <input class="form-check-input" type="checkbox" id="segment-analysis-show-best">
-          <label class="form-check-label small" for="segment-analysis-show-best">Best performance <span style="color:#b8860b">★</span></label>
+          <label class="form-check-label small" for="segment-analysis-show-best">Best per bin <span style="color:#b8860b">★</span></label>
+        </div>
+        <div class="form-check mb-0">
+          <input class="form-check-input" type="checkbox" id="segment-analysis-show-best-overall">
+          <label class="form-check-label small" for="segment-analysis-show-best-overall">Best overall <span style="color:#6f42c1">◆</span></label>
         </div>`;
       controls.appendChild(div);
       div.querySelectorAll('input[type="checkbox"]').forEach(cb => {
         cb.addEventListener('change', () => {
           if (cb.id === 'segment-analysis-show-avg') showAvg = cb.checked;
           if (cb.id === 'segment-analysis-show-best') showBest = cb.checked;
+          if (cb.id === 'segment-analysis-show-best-overall') showBestOverall = cb.checked;
           render();
         });
       });

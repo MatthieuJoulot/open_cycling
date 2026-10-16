@@ -28,7 +28,9 @@ export function attachFullscreen(cardEl, contentEl, { onResize, headerEl, floatC
   btn.title = 'Fullscreen';
   btn.style.marginLeft = 'auto';
   btn.setAttribute('aria-label', 'Toggle fullscreen');
-  btn.addEventListener('click', () => toggle(target, onResize));
+  // The expand button often sits inside clickable headers (stats section
+  // toggles); its click must not collapse the card the chart lives in.
+  btn.addEventListener('click', e => { e.stopPropagation(); toggle(target, onResize); });
 
   if (header.classList.contains('justify-content-between') && header.children.length > 1) {
     // Layouts like "title left, controls right": appending a third child
@@ -115,6 +117,11 @@ function open(contentEl, onResize) {
       // Containers must both grow AND pass the space down.
       el.style.display = 'flex';
       el.style.flexDirection = 'column';
+      // Fixed inline heights (chart wrappers like height:280px) would cap
+      // the chart inside the fullscreen overlay — flex growth handles the
+      // sizing instead. The original style is restored on close.
+      el.style.height = '';
+      el.style.maxHeight = '';
     }
     el.style.flex = '1 1 auto';
     el.style.minHeight = '0';

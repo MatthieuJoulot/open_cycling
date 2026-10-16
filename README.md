@@ -1,21 +1,21 @@
-# Open Cycling
+# Open Sports Analysis
 
-A local web app to detect, name, edit, and review cycling climbs from Garmin activities stored in a local GarminDB SQLite database.
+A local web app to analyze your Garmin activities — cycling, running and hiking — from a local GarminDB SQLite database: detect, name, edit and review climbs, per-sport statistics, best efforts, GPS heatmaps, 3D flyovers and training tracking.
 
 ## Features
 
-- Detects climb segments from ride altitude data.
+- Detects climb segments from ride altitude data (FIETS categories: gain² / length).
 - Names climbs using a curated list of cols/passes and OpenStreetMap fallback.
 - Groups equivalent climbs across activities.
 - Shows activity feed, climb list, individual climb performance history, and segment editing on a map.
 - Lets you modify or add segments manually and edit climb names.
 - **Two sync buttons**: **Fetch new activities** downloads and imports new rides from Garmin Connect; **Analyze activities** processes rides not yet analyzed and rebuilds climb groups — no command line needed.
-- **Statistics page**: per-period summary (distance, elevation, time, calories), monthly distance/elevation and rides charts, HR zone distribution, HR/speed/cadence trends, climb category distribution, hardest and favorite climbs.
-- **Best efforts**: fastest time over fixed distances (5 mile, 10K, 10 mile, 20K … 100K), computed with a rolling window over ride records and filtered by period.
+- **Statistics pages per sport** (cycling, running, hiking, all): per-period summary (distance, elevation, time, calories), monthly distance/elevation and rides charts, activity calendar, records/best efforts, climb profile (VAM vs duration), HR vs pace for running (elapsed-based, breaks included), HR vs speed by road grade for cycling, own VO₂max estimates (running VDOT, cycling climb physics) with Garmin trend, weather correlation, year-over-year distance, training load charts.
+- **Best efforts**: fastest time over fixed distances (1K, 1 mile, 5K, 10K … 100K), computed with a rolling window over ride records and filtered by period.
 - **Climb map**: all your climbs on a map, colored by category, with popups linking to their history.
-- **GPS heatmap**: every ridden road as a thin track; overlapping rides accumulate opacity so frequent routes glow. Choice of basemap (ESRI gray or OpenTopoMap) with matching palettes.
+- **GPS heatmap**: every ridden/run/walked road as a thin track; overlapping activities accumulate opacity so frequent routes glow. Per-sport on each statistics page, plus the full cycling heatmap with basemap choice (ESRI gray or OpenTopoMap).
+- **3D flyover**: terrain flyover of any ride with HUD (speed, altitude, climb badges, POI labels), in-browser video export.
 - **PR deltas**: each climb attempt (climb page and ride page) is compared to your personal best on that climb — green when faster, red when slower.
-- **Training page**: fitness/freshness/form chart from training load, weekly ride streaks, year-over-year distance comparison, editable monthly/yearly goals, a GitHub-style riding calendar, and a weather correlation scatter (efficiency/speed/heart rate vs temperature/altitude) with optional regression line.
 - **Dark mode**: theme toggle in the navbar, persisted per browser.
 
 ## Requirements
@@ -34,15 +34,15 @@ Everything runs in a single conda environment — the app and GarminDB together.
 Clone the repository:
 
 ```bash
-gh repo clone MatthieuJoulot/open_cycling
-cd open_cycling
+gh repo clone MatthieuJoulot/open_sports_analysis
+cd open_sports_analysis
 ```
 
 ### 1. Create the environment and install GarminDB (one time)
 
 ```bash
-conda create -n opencycling python=3.12 -y
-conda activate opencycling
+conda create -n opensports python=3.12 -y
+conda activate opensports
 pip install garmindb
 ```
 
@@ -77,7 +77,7 @@ This fetches the **1000 most recent** activities (GarminDB's default `download_a
 
 ### 2. Configure this app
 
-Still in the `opencycling` environment, start the server and configure from the UI — no file editing needed:
+Still in the `opensports` environment, start the server and configure from the UI — no file editing needed:
 
 ```bash
 python backend/serve.py
@@ -112,12 +112,12 @@ The databases and files are expected at the standard GarminDB layout inside that
 
 If your layout differs, the individual paths (`activities_db`, `garmin_db`, `fit_dir`, `personal_info_json`) override the derived ones; they are also editable under "Advanced paths" on the Parameters page.
 
-Paths may start with `~`. Each value can also be overridden with environment variables (`CLIMB_ANALYZER_HEALTH_DATA_DIR`, `CLIMB_ANALYZER_GARMINDB_CLI`, …). Changes to the port require a server restart; other values are picked up on save.
+Paths may start with `~`. Each value can also be overridden with environment variables (`OPEN_SPORTS_ANALYSIS_HEALTH_DATA_DIR`, `OPEN_SPORTS_ANALYSIS_GARMINDB_CLI`, …; the legacy `CLIMB_ANALYZER_*` names still work). Changes to the port require a server restart; other values are picked up on save.
 
 ### 3. Run
 
 ```bash
-conda activate opencycling
+conda activate opensports
 python backend/serve.py
 ```
 
