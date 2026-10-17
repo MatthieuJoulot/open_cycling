@@ -2,22 +2,6 @@
 
 A local web app to analyze your Garmin activities — cycling, running and hiking — from a local GarminDB SQLite database: detect, name, edit and review climbs, per-sport statistics, best efforts, GPS heatmaps, 3D flyovers and training tracking.
 
-## Features
-
-- Detects climb segments from ride altitude data (FIETS categories: gain² / length).
-- Names climbs using a curated list of cols/passes and OpenStreetMap fallback.
-- Groups equivalent climbs across activities.
-- Shows activity feed, climb list, individual climb performance history, and segment editing on a map.
-- Lets you modify or add segments manually and edit climb names.
-- **Two sync buttons**: **Fetch new activities** downloads and imports new rides from Garmin Connect; **Analyze activities** processes rides not yet analyzed and rebuilds climb groups — no command line needed.
-- **Statistics pages per sport** (cycling, running, hiking, all): per-period summary (distance, elevation, time, calories), monthly distance/elevation and rides charts, activity calendar, records/best efforts, climb profile (VAM vs duration), HR vs pace for running (elapsed-based, breaks included), HR vs speed by road grade for cycling, own VO₂max estimates (running VDOT, cycling climb physics) with Garmin trend, weather correlation, year-over-year distance, training load charts.
-- **Best efforts**: fastest time over fixed distances (1K, 1 mile, 5K, 10K … 100K), computed with a rolling window over ride records and filtered by period.
-- **Climb map**: all your climbs on a map, colored by category, with popups linking to their history.
-- **GPS heatmap**: every ridden/run/walked road as a thin track; overlapping activities accumulate opacity so frequent routes glow. Per-sport on each statistics page, plus the full cycling heatmap with basemap choice (ESRI gray or OpenTopoMap).
-- **3D flyover**: terrain flyover of any ride with HUD (speed, altitude, climb badges, POI labels), in-browser video export.
-- **PR deltas**: each climb attempt (climb page and ride page) is compared to your personal best on that climb — green when faster, red when slower.
-- **Dark mode**: theme toggle in the navbar, persisted per browser.
-
 ## Requirements
 
 - Python 3.10+ (standard library only, no pip packages needed for the core app)
